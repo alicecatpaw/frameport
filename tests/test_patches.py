@@ -525,6 +525,31 @@ def test_saving_a_recipe_keeps_works_with_issues():
     assert entry_from_library(entry("issues"), status="works").status == "works"  # an explicit choice wins
 
 
+def test_pipeline_save_known_good(tmp_path, monkeypatch):
+    """Save as known-good writes the catalog YAML and updates the game's active recipe to catalog (user)."""
+    from dataclasses import asdict
+
+    from frameport import pipeline
+    from frameport.core import library
+    from frameport.core.models import Recipe
+    from frameport.recommend import catalog
+
+    monkeypatch.setattr(catalog, "user_catalog_dir", lambda: tmp_path)
+    library.save({"games": {"com.x": {
+        "package": "com.x", "title": "Game X",
+        "analysis": {"package": "com.x", "engine": "Unity", "xr": "OpenXR", "version": "1.0"},
+        "recipe": asdict(Recipe("com.x", status="unknown", source="user", patches={"frame.unity_text_input": {}})),
+        "catalog_update": "old_hash",
+    }}})
+    pipeline.save_known_good("com.x")
+    g = library.game("com.x")
+    assert (tmp_path / "com.x.yaml").is_file()
+    assert g["recipe"]["source"] == "catalog (user)"
+    assert g["recipe"]["status"] == "works"
+    assert g["status"] == "works"
+    assert g.get("catalog_update") is None
+
+
 def test_every_patch_has_a_plain_summary():
     """The game page shows patch.summary by default (plain words); adapter settings use the Game settings dialog."""
     from frameport.patches import base

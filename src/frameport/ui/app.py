@@ -1411,8 +1411,9 @@ class FramePortApp:
         return self.target
 
     def save_known_good(self, package: str) -> None:
-        catalog.save_user_entry(catalog.entry_from_library(library.game(package)))
+        pipeline.save_known_good(package)
         self.toast(tr("Saved as a known-good recipe"))
+        self.refresh_view()
 
     # ================================================================== sharing / diagnostics
     def open_url(self, url: str) -> None:
@@ -1496,6 +1497,7 @@ class FramePortApp:
                 library.upsert_game(pkg, shared_config=time.time())  # the game page stops asking
                 self.open_url(url)
                 self.toast(tr("Saved as known-good. Check the issue on GitHub and submit it"))
+                self.refresh_view()
             self.run_bg(work)
         send.on_click = go
         self.page.show_dialog(ft.AlertDialog(

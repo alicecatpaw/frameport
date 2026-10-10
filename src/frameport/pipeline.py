@@ -598,7 +598,7 @@ def source_of(entry: dict) -> SourceGame:
 
 
 def set_recipe(package: str, recipe: Recipe) -> None:
-    library.upsert_game(package, recipe=library.recipe_to_dict(recipe))
+    library.upsert_game(package, recipe=library.recipe_to_dict(recipe), status=recipe.status)
 
 
 def reset_recipe(package: str) -> Recipe:
@@ -1106,6 +1106,30 @@ def collect_diagnostics(packages: list[str] | None, target: Target | None, repor
     return bundle.collect(packages, target, reporter, dest, extra)
 
 
+def save_known_good(package: str, status: str | None = None, notes: str | None = None,
+                    verified: dict | None = None) -> CatalogEntry:
+    """Save the game's recipe as a known-good user recipe and update the library to use it."""
+    from .recommend import catalog
+
+    g = library.game(package)
+    if not g or not g.get("recipe"):
+        raise ValueError(f"{package} has no recipe")
+    entry = catalog.entry_from_library(g, status=status, notes=notes, verified=verified)
+    catalog.save_user_entry(entry)
+    a = library.analysis_from_dict(g["analysis"]) if g.get("analysis") else None
+    if a:
+        recipe = engine.suggest(a)
+    else:
+        recipe = library.recipe_from_dict(g["recipe"])
+        recipe.source = f"catalog ({entry.origin})"
+        recipe.status = entry.status
+        recipe.catalog_rev = entry.rev()
+    set_recipe(package, recipe)
+    with library.edit() as data:
+        data["games"].get(package, {}).pop("catalog_update", None)
+    return entry
+
+
 def share_working_config(package: str, status: str = "works", notes: str = "",
                          frame_info: dict | None = None) -> str:
     """Save the game's recipe as a known-good user recipe and return a prefilled GitHub issue link that submits it
@@ -1120,8 +1144,7 @@ def share_working_config(package: str, status: str = "works", notes: str = "",
     verified = {"app": env.get("app"), "overport_cli": (env.get("tools") or {}).get("overport"),
                 "frame_build": (env.get("frame") or {}).get("build_id"),
                 "agent": (env.get("frame") or {}).get("agent_version")}
-    entry = catalog.entry_from_library(g, status=status, notes=notes or None, verified=verified)
-    catalog.save_user_entry(entry)
+    entry = save_known_good(package, status=status, notes=notes or None, verified=verified)
     return issue.working_config_url(g, catalog.to_yaml(entry), status, notes, env, redact.default(frame_info))
 
 
