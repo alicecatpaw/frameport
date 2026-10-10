@@ -63,7 +63,7 @@ def repo_archive(path_prefix: str) -> tuple[str, str]:
     """(url, sha1) of a package in Google's repository for this host OS."""
     host = {"Linux": "linux", "Darwin": "macosx", "Windows": "windows"}[platform.system()]
     idx = fetch(REPO + "repository2-3.xml", CACHE / "repository2-3.xml")
-    root = ElementTree.fromstring(idx.read_text())
+    root = ElementTree.fromstring(idx.read_bytes())
     for pkg in root.iter("remotePackage"):
         if pkg.get("path") != path_prefix:
             continue

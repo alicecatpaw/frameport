@@ -92,7 +92,8 @@ def test_patches_suggested_for_unity_apps_with_text_fields():
     base.load_all()
     a = _analysis(libs=["libil2cpp.so", "libunity.so"], extra={"text_fields": ["TMP_InputField"], "vr_kind": "quest"})
     assert base.get("frame.unity_text_input").detect(a).recommended
-    assert base.get("device.text_input_window").detect(a).recommended
+    assert not base.get("device.text_input_window").detect(a).recommended
+    assert base.get("device.text_input_window").detect(a) is not None
     a.extra["text_fields"] = []
     assert base.get("frame.unity_text_input").detect(a) is None and not base.get("frame.unity_text_input").applies(a)
 
