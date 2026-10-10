@@ -571,7 +571,7 @@ class TextInputWindow(Patch):
 
     def detect(self, a):
         if self.applies(a):
-            return Suggestion(True, "App with text fields: key presses only reach a shown Android window.")
+            return Suggestion(False, "App with text fields: enable only if you need to type into an Android keyboard window.")
         return None
 
     def install(self, ctx: InstallContext) -> None:

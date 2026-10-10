@@ -20,3 +20,8 @@ CLAUDE.local.md
 REPORT.md
 .ruff_cache/
 .claude/worktrees/
+
+# packaging and build outputs
+FramePort-windows-x64/
+FramePort-windows-x64.zip
+*.spec

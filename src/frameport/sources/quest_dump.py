@@ -254,7 +254,14 @@ def _no_quest_games_below(d: Path) -> bool:
         names = [p.name.lower() for p in d.iterdir()]
     except OSError:
         return True
-    return any(n.endswith((".exe", ".dll")) for n in names) or ".git" in names or "pyvenv.cfg" in names
+    if ".git" in names or "pyvenv.cfg" in names:
+        return True
+    if any(n.endswith((".exe", ".dll")) for n in names):
+        try:
+            return not any(d.glob("*/*.apk"))
+        except OSError:
+            return True
+    return False
 
 
 def _other_folders(d: Path, game: SourceGame) -> list[Path]:
