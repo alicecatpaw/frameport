@@ -114,6 +114,7 @@ static int pose_consistency = 0;  // repeat xrLocateViews queries for one displa
 static int pose_time_fix;   // poses asked for at CLOCK_MONOTONIC "now" or far in the past: at XrTime "now" (pose_time.c)
 static int pose_debug;      // diagnostics: requested pose times vs the predicted display time (pose_time.c)
 static int layer_fix = 1;
+static uint32_t runtime_max_layer_count = 16;
 static int mutable_fix = 0;
 static int swap_eyes = 0;
 static int passthrough_emul = 1;
@@ -667,8 +668,12 @@ static int layer_usable(const XrCompositionLayerBaseHeader *layer) {
             if (!runtime_swapchain(p->views[v].subImage.swapchain)) return 0;
         return 1;
     }
-    case XR_TYPE_COMPOSITION_LAYER_QUAD:
-        return runtime_swapchain(((const XrCompositionLayerQuad *)layer)->subImage.swapchain);
+    case XR_TYPE_COMPOSITION_LAYER_QUAD: {
+        const XrCompositionLayerQuad *q = (const XrCompositionLayerQuad *)layer;
+        if (q->size.width <= 0.0f || q->size.height <= 0.0f) return 0;
+        if (q->subImage.imageRect.extent.width <= 0 || q->subImage.imageRect.extent.height <= 0) return 0;
+        return runtime_swapchain(q->subImage.swapchain);
+    }
     case XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR:
         if (no_cylinder) return 0;
         return runtime_swapchain(((const XrCompositionLayerCylinderKHR *)layer)->subImage.swapchain);
@@ -763,16 +768,24 @@ XRAPI_ATTR XrResult XRAPI_CALL xrGetSystemProperties(XrInstance instance, XrSyst
     PFN_xrGetSystemProperties fn = (PFN_xrGetSystemProperties)lookup(instance, "xrGetSystemProperties");
     if (!fn) return XR_ERROR_FUNCTION_UNSUPPORTED;
     XrResult result = fn(instance, system, properties);
-    if (XR_SUCCEEDED(result) && properties && layer_debug)
-        LOG("layer_debug: system '%s' maxLayerCount=%u max swapchain %ux%u", properties->systemName,
-            properties->graphicsProperties.maxLayerCount, properties->graphicsProperties.maxSwapchainImageWidth,
-            properties->graphicsProperties.maxSwapchainImageHeight);
+    if (XR_SUCCEEDED(result) && properties) {
+        if (properties->graphicsProperties.maxLayerCount)
+            runtime_max_layer_count = properties->graphicsProperties.maxLayerCount;
+        if (layer_debug)
+            LOG("layer_debug: system '%s' maxLayerCount=%u max swapchain %ux%u", properties->systemName,
+                properties->graphicsProperties.maxLayerCount, properties->graphicsProperties.maxSwapchainImageWidth,
+                properties->graphicsProperties.maxSwapchainImageHeight);
+    }
     if (XR_SUCCEEDED(result) && (emulate_passthrough || emulate_scene || emulate_render_model) && properties)
         for (XrBaseOutStructure *p = (XrBaseOutStructure *)properties->next; p; p = p->next) {
             if (p->type == XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES_FB)
                 ((XrSystemPassthroughPropertiesFB *)p)->supportsPassthrough = XR_TRUE;
             if (p->type == XR_TYPE_SYSTEM_SPATIAL_ENTITY_PROPERTIES_FB && emulate_scene)
                 ((XrSystemSpatialEntityPropertiesFB *)p)->supportsSpatialEntity = XR_TRUE;
+            if (p->type == XR_TYPE_SYSTEM_SPACE_DISCOVERY_PROPERTIES_META && emulate_scene)
+                ((XrSystemSpaceDiscoveryPropertiesMETA *)p)->supportsSpaceDiscovery = XR_TRUE;
+            if (p->type == XR_TYPE_SYSTEM_BOUNDARY_VISIBILITY_PROPERTIES_META && emulate_scene)
+                ((XrSystemBoundaryVisibilityPropertiesMETA *)p)->supportsBoundaryVisibility = XR_TRUE;
             if (p->type == XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES2_FB)
                 ((XrSystemPassthroughProperties2FB *)p)->capabilities = XR_PASSTHROUGH_CAPABILITY_BIT_FB;
             if (p->type == XR_TYPE_SYSTEM_RENDER_MODEL_PROPERTIES_FB && emulate_render_model)
@@ -1750,6 +1763,43 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEndFrame(XrSession session, const XrFrameEndInf
         }
         kept[count++] = layer;
     }
+    uint32_t max_layers = runtime_max_layer_count ? runtime_max_layer_count : 16;
+    if (count > max_layers) {
+        static int layer_limit_logged;
+        if (layer_limit_logged++ < 5)
+            LOG("xrEndFrame: layerCount %u exceeds runtime limit %u, trimming excess layers", count, max_layers);
+        const XrCompositionLayerBaseHeader *trimmed[64];
+        uint32_t tcount = 0;
+        uint32_t proj_count = 0;
+        for (uint32_t i = 0; i < count; ++i)
+            if (kept[i] && kept[i]->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) ++proj_count;
+        uint32_t proj_budget = proj_count < max_layers ? proj_count : max_layers;
+        uint32_t non_proj_budget = max_layers - proj_budget;
+        uint32_t proj_kept = 0, non_proj_kept = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!kept[i]) continue;
+            if (kept[i]->type == XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+                if (proj_kept < proj_budget) {
+                    trimmed[tcount++] = kept[i];
+                    ++proj_kept;
+                } else {
+                    ++dropped;
+                }
+            } else {
+                if (non_proj_kept < non_proj_budget) {
+                    trimmed[tcount++] = kept[i];
+                    ++non_proj_kept;
+                } else {
+                    ++dropped;
+                }
+            }
+        }
+        if (layer_limit_logged++ < 5)
+            LOG("xrEndFrame: layerCount %u exceeds runtime limit %u, trimmed to %u (proj %u/%u, non-proj %u/%u)",
+                count, max_layers, tcount, proj_kept, proj_count, non_proj_kept, count - proj_count);
+        for (uint32_t i = 0; i < tcount; ++i) kept[i] = trimmed[i];
+        count = tcount;
+    }
     XrFrameEndInfo fixed = *info;
     fixed.layers = kept;
     fixed.layerCount = count;
@@ -1757,11 +1807,11 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEndFrame(XrSession session, const XrFrameEndInf
     static int warned, failures, passthrough_logged;
     if (dropped && warned++ < 5) LOG("xrEndFrame: dropped %u unusable layer(s)", dropped);
     if (passthrough && !passthrough_logged++) LOG("xrEndFrame: passthrough layer -> ALPHA_BLEND environment");
-    static int views_logged;
-    if (views_logged < 3) {  // describe the stereo layer layout a few times to debug eye/stereo problems
-        for (uint32_t i = 0; i < info->layerCount; ++i) {
-            const XrCompositionLayerBaseHeader *l = info->layers[i];
-            if (l && l->type == XR_TYPE_COMPOSITION_LAYER_QUAD) {
+    static int views_logged, quads_logged;
+    if (views_logged < 3 || quads_logged < 10) {  // describe the stereo layer layout and quads
+        for (uint32_t i = 0; i < fixed.layerCount; ++i) {
+            const XrCompositionLayerBaseHeader *l = fixed.layers[i];
+            if (l && l->type == XR_TYPE_COMPOSITION_LAYER_QUAD && quads_logged < 10) {
                 const XrCompositionLayerQuad *qd = (const XrCompositionLayerQuad *)l;
                 char chain[160] = "";
                 size_t used = 0;
@@ -1772,10 +1822,12 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEndFrame(XrSession session, const XrFrameEndInf
                                       (unsigned long long)((const XrCompositionLayerImageLayoutFB *)n)->flags);
                     used += w;
                 }
-                LOG("quad layer: flags=0x%llx size=%.2fx%.2f next:%s", (unsigned long long)qd->layerFlags,
-                    qd->size.width, qd->size.height, chain);
+                LOG("quad layer %u: swapchain=%p flags=0x%llx size=%.2fx%.2f pos=%.2f,%.2f,%.2f next:%s", i,
+                    (void *)(uintptr_t)qd->subImage.swapchain, (unsigned long long)qd->layerFlags,
+                    qd->size.width, qd->size.height, qd->pose.position.x, qd->pose.position.y, qd->pose.position.z, chain);
+                ++quads_logged;
             }
-            if (!l || l->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) continue;
+            if (!l || l->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION || views_logged >= 3) continue;
             const XrCompositionLayerProjection *p = (const XrCompositionLayerProjection *)l;
             for (uint32_t v = 0; v < p->viewCount; ++v) {
                 const XrCompositionLayerProjectionView *pv = &p->views[v];
@@ -1913,7 +1965,8 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEnumerateApiLayerProperties(uint32_t capacity, 
 // For native/xrshim: emulated functions that overport's dispatcher doesn't know (it never asks us for them).
 __attribute__((visibility("default"))) PFN_xrVoidFunction framebridge_extension_proc(const char *name) {
     pthread_once(&init_once, initialize);
-    if(surface_native && name){
+    if (!name) return NULL;
+    if (surface_native) {
 #define NATIVE_PROC(fn) if(!strcmp(name,#fn))return (PFN_xrVoidFunction)fn;
         NATIVE_PROC(xrGetVulkanGraphicsDeviceKHR)
         NATIVE_PROC(xrGetVulkanDeviceExtensionsKHR)
@@ -1921,7 +1974,9 @@ __attribute__((visibility("default"))) PFN_xrVoidFunction framebridge_extension_
         NATIVE_PROC(xrCreateVulkanInstanceKHR)
 #undef NATIVE_PROC
     }
-    return name ? render_model_emulation(name) : NULL;
+    PFN_xrVoidFunction fn = scene_emulation(name);
+    if (!fn) fn = render_model_emulation(name);
+    return fn;
 }
 
 XRAPI_ATTR XrResult XRAPI_CALL xrGetInstanceProcAddr(XrInstance instance, const char *name,
