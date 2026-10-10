@@ -45,6 +45,12 @@ def setup(component: str = "app") -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     log.addHandler(handler)
     log.setLevel(logging.INFO)
+    flet_log = logging.getLogger("flet")
+    flet_log.addHandler(handler)
+    flet_log.setLevel(logging.INFO)
+    root_log = logging.getLogger()
+    if not any(getattr(h, "_frameport", False) for h in root_log.handlers):
+        root_log.addHandler(handler)
     log.info("start %s: %s (python %s, %s)", component, _version(), sys.version.split()[0], sys.platform)
     previous = sys.excepthook
 
@@ -62,9 +68,10 @@ def _version() -> str:
 
 def shutdown() -> None:
     """Close the log file (uninstall: an open file can't be deleted on Windows)."""
-    for h in [h for h in log.handlers if getattr(h, "_frameport", False)]:
-        log.removeHandler(h)
-        h.close()
+    for l in (log, logging.getLogger("flet"), logging.getLogger()):
+        for h in [h for h in l.handlers if getattr(h, "_frameport", False)]:
+            l.removeHandler(h)
+            h.close()
 
 
 def save_job_log(kind: str, package: str | None, state: str, text: str) -> Path | None:
