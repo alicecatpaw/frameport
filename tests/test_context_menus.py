@@ -128,3 +128,31 @@ def test_drag_select_from_empty_space_selects_and_calls_on_start():
     d.start()
     d.hover("x", True)
     assert sel == {"x"} and started == [1]
+
+
+def test_screenshots_viewer_dialog_actions():
+    dialogs = []
+    popped = []
+    tasks = []
+    app = FakeApp()
+    app.page.show_dialog = lambda d: dialogs.append(d)
+    app.page.pop_dialog = lambda: popped.append(1)
+    app.page.run_task = lambda fn, *a, **k: tasks.append((fn, a, k))
+    app.run_bg = lambda fn, *a: None
+    app.target = SimpleNamespace(frame=None)
+    v = ScreenshotsView(app)
+
+    v.shots = [{"path": "/s/0.jpg", "package": "com.x", "title": "X", "time": 1}]
+    v.viewer(0)
+    assert len(dialogs) == 1
+    row = dialogs[0].content.content.controls[1]
+    download_btn = row.controls[3]
+    assert download_btn.content == "Download"
+    download_btn.on_click(None)
+    assert len(popped) == 1
+    assert len(tasks) == 1
+    assert tasks[0][0] == v.download
+    assert tasks[0][1] == ([v.shots[0]],)
+
+
+

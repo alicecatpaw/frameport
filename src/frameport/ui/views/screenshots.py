@@ -6,6 +6,7 @@ once into the cache and shown by asset URL; cards stream in batches from a backg
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING
 import flet as ft
 
 from ...artwork import thumbs
+from ...core.applog import log
 from ...errors import explain
 from ...i18n import tr, tr_n
 from .. import components as C
@@ -409,11 +411,20 @@ class ScreenshotsView:
                 img.src = thumbs.asset_url(p)
                 C.update(img)
 
-        async def download(e):
-            await self.download([shots[state["i"]]])
+        def close() -> None:
+            try:
+                page.pop_dialog()
+            except Exception:
+                log.exception("Screenshots: viewer pop_dialog failed")
 
-        def delete(e):
-            page.pop_dialog()
+        def download(e) -> None:
+            log.info("Screenshots: viewer download clicked for screenshot %s", state.get("i"))
+            close()
+            self._later(self.download, [shots[state["i"]]])
+
+        def delete(e) -> None:
+            log.info("Screenshots: viewer delete clicked for screenshot %s", state.get("i"))
+            close()
             self.delete([shots[state["i"]]])
         page.show_dialog(C.viewer(
             ft.Container(ft.Column([img, ft.Row([
@@ -423,7 +434,7 @@ class ScreenshotsView:
                 C.secondary(tr("Copy"), ft.Icons.CONTENT_COPY_ROUNDED, lambda e: self.copy(shots[state["i"]])),
                 C.secondary(tr("Download…"), ft.Icons.DOWNLOAD_ROUNDED, download),
                 C.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, tr("Delete…"), delete),
-                C.ghost(tr("Close"), on_click=lambda e: page.pop_dialog())], spacing=T.S2,
+                C.ghost(tr("Close"), on_click=lambda e: close())], spacing=T.S2,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER)], spacing=T.S2, tight=True), width=T.px(1100))))
         show()
 
@@ -496,10 +507,18 @@ class ScreenshotsView:
             await self.download(list(self.shots))
 
     async def download(self, shots: list[dict]) -> None:
-        folder = await C.pick_dir(self.app.page,
-                                  dialog_title=tr("Save the screenshots to which folder on this PC?"))
-        if not folder:
+        await asyncio.sleep(0.05)
+        log.info("Screenshots: opening file picker to download %d screenshot(s)", len(shots))
+        try:
+            folder = await ft.FilePicker().get_directory_path(
+                dialog_title=tr("Save the screenshots to which folder on this PC?"))
+        except Exception:
+            log.exception("Screenshots: get_directory_path failed")
             return
+        if not folder:
+            log.info("Screenshots: download cancelled (no folder selected)")
+            return
+        log.info("Screenshots: user selected folder %s", folder)
         app = self.app
 
         def run(job):
