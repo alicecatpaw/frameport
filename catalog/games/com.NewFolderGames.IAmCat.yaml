@@ -15,13 +15,12 @@ xr: OpenXR
 frame:
 - frame.unity_text_input
 - frame.unity_multipass
-device:
-- device.text_input_window
+device: []
 adapter:
   pose_consistency: 1
 verified:
   date: '2026-10-05'
   issue: 8
-updated: '2026-10-05'
+updated: '2026-10-11'
 min_app: 0.11.0
 source_hint: I Am Cat
