@@ -20,12 +20,12 @@ The player spawns into the game with head tracking working, but physical VR cont
 
 ### Root Cause
 1. **Manifest Heuristic False Positive**:
-   In [`detect.py`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/analysis/detect.py), `hand_tracking_only` is set to `True` whenever `<uses-feature android:name="oculus.software.handtracking" />` is found in `AndroidManifest.xml`. Many Quest titles support **both** controllers and hands, but include this feature tag with `android:required="true"` or defaulted to true.
+   In `src/frameport/analysis/detect.py`, `hand_tracking_only` is set to `True` whenever `<uses-feature android:name="oculus.software.handtracking" />` is found in `AndroidManifest.xml`. Many Quest titles support **both** controllers and hands, but include this feature tag with `android:required="true"` or defaulted to true.
 2. **Auto-Heuristic Sets `controller_fix=0`**:
-   In [`settings.py`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/settings.py), `hand_tracking_only` causes FramePort to suggest `adapter.controller_fix: 0` (turning off **"Use controllers"** in the UI).
+   In `src/frameport/patches/settings.py`, `hand_tracking_only` causes FramePort to suggest `adapter.controller_fix: 0` (turning off **"Use controllers"** in the UI).
 3. **Runtime Consequences in FrameBridge (`frame_adapter.c`)**:
-   - **No Interaction Profile Remap**: Normally, [`xrGetCurrentInteractionProfile`](file:///c:/Users/alice/Documents/frameport/frameport/native/adapter/frame_adapter.c#L1585) rewrites `/interaction_profiles/valve/frame_controller` or generic controller to `/interaction_profiles/oculus/touch_controller`. When `controller_fix == 0`, this rewrite is skipped (`if (!controller_fix) return result;`). Unity's Oculus XR Plugin / OVRInput sees an unknown interaction profile and reports no controllers connected.
-   - **Synthetic Hand Passthrough**: When `controller_fix == 0`, [`xrLocateHandJointsEXT`](file:///c:/Users/alice/Documents/frameport/frameport/native/adapter/frame_adapter.c#L1572) does not force `locations->isActive = XR_FALSE`. The Steam Frame's synthetic hands (generated from controller poses) are passed to the app, causing the game engine to switch to hand-tracking mode and ignore physical button presses.
+   - **No Interaction Profile Remap**: Normally, `xrGetCurrentInteractionProfile` (in `native/adapter/frame_adapter.c`) rewrites `/interaction_profiles/valve/frame_controller` or generic controller to `/interaction_profiles/oculus/touch_controller`. When `controller_fix == 0`, this rewrite is skipped (`if (!controller_fix) return result;`). Unity's Oculus XR Plugin / OVRInput sees an unknown interaction profile and reports no controllers connected.
+   - **Synthetic Hand Passthrough**: When `controller_fix == 0`, `xrLocateHandJointsEXT` (in `native/adapter/frame_adapter.c`) does not force `locations->isActive = XR_FALSE`. The Steam Frame's synthetic hands (generated from controller poses) are passed to the app, causing the game engine to switch to hand-tracking mode and ignore physical button presses.
 
 ### Fix
 Ensure `controller_fix=1` is active:
@@ -64,7 +64,7 @@ The game only suggests bindings for newer Meta interaction profiles:
 The Steam Frame's Android OpenXR runtime only recognizes `/interaction_profiles/oculus/touch_controller`.
 
 ### Behavior & Fix
-- FrameBridge includes `profile_remap=1` by default (in [`session_fixes.c`](file:///c:/Users/alice/Documents/frameport/frameport/native/adapter/session_fixes.c#L288)).
+- FrameBridge includes `profile_remap=1` by default (in `native/adapter/session_fixes.c`).
 - When `xrSuggestInteractionProfileBindings` returns `XR_ERROR_PATH_UNSUPPORTED` for a newer profile in `NEWER_TOUCH`, `remap_to_touch` automatically filters out unsupported components and resubmits the bindings for `/interaction_profiles/oculus/touch_controller`.
 - If an app has buttons mapped incorrectly, verify `profile_remap=1` is present in `framebridge.conf`.
 
@@ -83,7 +83,7 @@ strncmp(SystemInfo.deviceModel, "Oculus", 6) == 0
 On the Steam Frame, the Lepton container reports the device model as `"Valve Lepton"`. Because the prefix does not match `"Oculus"`, Unity treats the headset as unknown/Go, never initializes Touch controller nodes, and fails to poll `ovrp_GetControllerState(0x3)`.
 
 ### Fix
-Apply patch [`frame.unity_oculus_check`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/frame/unity_oculus_check.py) (revision 4):
+Apply patch `frame.unity_oculus_check` (`src/frameport/patches/frame/unity_oculus_check.py`, revision 4):
 - Binary patches the check in `libunity.so` by replacing `orr w2, wzr, #6` with `mov w2, #0` (`MOV_W2_0 = 0x52800002`), forcing `strncmp` length to 0 (always matches).
 - Routes `ovrp_GetNodePresent` and `ovrp_Update2` through `libfp_ovrp.so` (`ovrpshim`).
 
@@ -98,7 +98,7 @@ In Unity titles using the Oculus XR Plugin (e.g. BONELAB), the scene renders at 
 A few seconds after boot, `OVRPlugin` reports `ovrp_GetUserPresent2 -> 0` ("headset not worn"). Games with custom rigs (e.g. Marrow Rig) check `XRHMD.IsUserPresent` / `UserPresence` every frame and refuse to update controller or head tracking poses when user presence is false.
 
 ### Fix
-Apply patch [`frame.unity_user_presence`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/frame/unity_user_presence.py):
+Apply patch `frame.unity_user_presence` (`src/frameport/patches/frame/unity_user_presence.py`):
 - Replaces the `ovrp_GetUserPresent2` symbol in `libOculusXRPlugin.so` with `fpov_GetUserPresent2` in `libfp_ovrp.so`, which unconditionally reports user presence as true (`*present = 1`).
 
 ---
