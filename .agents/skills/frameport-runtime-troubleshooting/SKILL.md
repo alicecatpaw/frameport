@@ -23,16 +23,16 @@ When launching a Quest VR game from Steam on the Steam Frame, the headset displa
    Lepton (the SteamOS Android container runtime) executes Quest apps headless by default (only OpenXR composition swapchains reach the compositor).
    If a file named `lepton-show-flatscreen` is present inside `<base>/lepton-app/` (e.g. `/home/steamos/Applications/quest-frame/<package>/lepton-app/lepton-show-flatscreen`), Lepton forces Waydroid/Gamescope to render the app as a flat 2D Wayland desktop surface.
 2. **`device.text_input_window` False Positives**:
-   FramePort includes a patch [`TextInputWindow`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/settings.py#L478-L501) (`device.text_input_window`), designed to allow text input from Steam's on-screen keyboard into Android input fields.
-   When `device.text_input_window` is enabled, [`installer.py`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/install/installer.py#L409-L415) flags `flatscreen=True` during install finalization, creating the `lepton-show-flatscreen` marker.
-   If [`TextInputWindow.detect`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/settings.py#L493-L496) returns `Suggestion(True)` for any game with text fields (e.g. *Run*, *Angry Birds VR*, *Counter Fight ICHIRAN*), the game inadvertently installs in 2D flatscreen mode.
+   FramePort includes a patch `TextInputWindow` (`src/frameport/patches/settings.py`, `device.text_input_window`), designed to allow text input from Steam's on-screen keyboard into Android input fields.
+   When `device.text_input_window` is enabled, `src/frameport/install/installer.py` flags `flatscreen=True` during install finalization, creating the `lepton-show-flatscreen` marker.
+   If `TextInputWindow.detect` (`src/frameport/patches/settings.py`) returns `Suggestion(True)` for any game with text fields (e.g. *Run*, *Angry Birds VR*, *Counter Fight ICHIRAN*), the game inadvertently installs in 2D flatscreen mode.
 
 ### Diagnosis
 Check for the marker file on the Frame:
 ```bash
 python -c "
 from frameport.frame.connection import Frame, FrameTarget
-f = Frame(FrameTarget('192.168.86.60', 'steamos')).connect()
+f = Frame(FrameTarget('<frame-ip>', 'steamos')).connect()
 ret, out, err = f.run('ls -la /home/steamos/Applications/quest-frame/<package>/lepton-app/lepton-show-flatscreen')
 print('Marker present:' if ret == 0 else 'No marker')
 "
@@ -48,7 +48,7 @@ print('Marker present:' if ret == 0 else 'No marker')
 3. **Update recipe in `library.json`**:
    Remove `"device.text_input_window"` from the game's `recipe.patches` so future updates or syncs do not reintroduce it.
 4. **Ensure `TextInputWindow.detect` remains opt-in**:
-   In [`src/frameport/patches/settings.py`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/settings.py#L495), `detect()` must return `Suggestion(False, ...)` so text field detection does not auto-enable the flat window.
+   In `src/frameport/patches/settings.py`, `detect()` must return `Suggestion(False, ...)` so text field detection does not auto-enable the flat window.
 
 ---
 
@@ -58,17 +58,17 @@ print('Marker present:' if ret == 0 else 'No marker')
 Installed games in FramePort display "Update ready" (`outdated` style) even though the game version has not changed and the installed APK is identical.
 
 ### Root Cause
-In [`src/frameport/ui/components.py`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/ui/components.py#L104-L120), [`install_state(g, frame_info)`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/ui/components.py#L104) marks an install `"outdated"` if:
+In `src/frameport/ui/components.py`, `install_state(g, frame_info)` marks an install `"outdated"` if:
 1. **Binary APK mismatch**: `dep["sha256"] not in built`.
 2. **Recipe changed**: `dep["sha256"] in built and recipe_changed(game)`:
-   - [`recipe_changed`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/ui/components.py#L123-L132) compares the current [`recipe_fingerprint(recipe)`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/base.py#L175-L188) against `build.recipe_fp` stored in `library.json`.
+   - `recipe_changed` (`src/frameport/ui/components.py`) compares the current `recipe_fingerprint(recipe)` (`src/frameport/patches/base.py`) against `build.recipe_fp` stored in `library.json`.
    - `recipe_fingerprint` hashes **all** patches in `recipe["patches"]`, including runtime-only settings (`adapter.*`, `device.*`). If any patch is removed or default recommendations change, the fingerprint changes.
-3. **Settings difference**: [`settings_diff(game, frame_info)`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/ui/components.py#L48-L62) is not `None`:
+3. **Settings difference**: `settings_diff(game, frame_info)` (`src/frameport/ui/components.py`) is not `None`:
    - Compares the patches list stored in remote `deployment.json` with the current recipe patches (filtering superseded patches).
    - If a patch was removed locally but remains recorded in the Frame's `deployment.json`, `settings_diff` returns `([], ['removed_patch'])`.
 
 ### The Reinstall Pitfall
-If the user clicks "Update on Frame", FramePort checks if the local converted APK exists. Because FramePort removes intermediate APK copies after installation ([`pipeline.remove_converted_copies`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/pipeline.py#L679)), it triggers a full, redundant rebuild (OVRPort decompile, patch, repack, sign, upload) taking several minutes.
+If the user clicks "Update on Frame", FramePort checks if the local converted APK exists. Because FramePort removes intermediate APK copies after installation (`pipeline.remove_converted_copies` in `src/frameport/pipeline.py`), it triggers a full, redundant rebuild (OVRPort decompile, patch, repack, sign, upload) taking several minutes.
 
 ### Fast Metadata Reconciliation (Zero-Rebuild Sync)
 When the APK on the Frame is already correct and only settings or default recipe definitions changed:
@@ -102,7 +102,7 @@ The game renders in VR, but textures and text look blurry, soft, or heavily alia
    ```
 2. Check if the title uses internal dynamic resolution downscaling (e.g. *Counter Fight ICHIRAN* renders at internal 0.75x / `1296x1296` vs the Frame's recommended `1728x1728`).
 3. Check MSAA configuration:
-   Most Unity titles on FramePort use [`frame.unity_runtime_msaa_off`](file:///c:/Users/alice/Documents/frameport/frameport/src/frameport/patches/frame/unity_runtime.py#L22) because multisampled renderbuffers on GLES can crash or hang the Steam Frame's GPU. Without MSAA, sub-native rendering looks especially low-res.
+   Most Unity titles on FramePort use `frame.unity_runtime_msaa_off` (`src/frameport/patches/frame/unity_runtime.py`) because multisampled renderbuffers on GLES can crash or hang the Steam Frame's GPU. Without MSAA, sub-native rendering looks especially low-res.
 
 ### Fix: Eye Buffer Multiplier
 Apply `adapter.scale` via FrameBridge (available live without re-patching the APK):
