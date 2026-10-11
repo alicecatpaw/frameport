@@ -5,6 +5,7 @@ notes: 'Supports SteamVR/OpenXR itself: runs directly, without Revive (arguments
 engine: Unity
 xr: LibOVR+OpenVR
 kind: rift
+quest_package: quest.eleven.forfunlabs
 pcvr:
 - pcvr.launch_args
 - pcvr.xr_timefix

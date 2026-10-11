@@ -1,0 +1,15 @@
+package: quest.eleven.forfunlabs
+title: Eleven
+status: unsupported
+notes: Needs the Meta Horizon / Oculus Platform SDK to initialize; stays stuck on the startup screen without Meta's platform service on the Frame.
+details: Unity and OpenXR start and pace frames cleanly at 72 fps, but the IL2CPP startup sequence halts in MetaPlatform.HandlePlatformInitialization when the Oculus Platform entitlement and account initialization fail without Meta Horizon services. Play the PC VR version via SteamVR.
+tested_version: '0.436.37'
+engine: Unity
+xr: OpenXR
+pcvr_alternative: Eleven Table Tennis VR (Steam 1199580 or Rift store) runs on PC via SteamVR.
+verified:
+  date: '2026-10-10'
+  app: 0.3.4
+  overport_cli: 1.2.5
+  agent: 63
+source_hint: Eleven Table Tennis

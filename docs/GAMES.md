@@ -11,6 +11,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | AgeOfJoy | Quest | ✅ Works |  |
 | AllInOneSports | Quest | ✅ Works |  |
 | Asgard's Wrath 2 | Quest | ✅ Works |  |
+| Audica | Quest | ✅ Works |  |
 | BAM | Quest | ✅ Works |  |
 | BARTENDER VR SIMULATOR | Quest | ✅ Works |  |
 | Batman: Arkham Shadow | Quest | ✅ Works |  |
@@ -18,15 +19,19 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | BattleSisters | Quest | ✅ Works |  |
 | Beat Saber | Quest | ✅ Works |  |
 | Beat Saber | Quest | ✅ Works |  |
+| Beat Saber | PC VR | ✅ Works |  |
 | Beat Saber (co-existence build) | Quest | ✅ Works |  |
 | Blade & Sorcery: Nomad | Quest | ✅ Works |  |
 | BodyCombat | Quest | ✅ Works |  |
 | BONELAB | Quest | ✅ Works |  |
 | Carve Snowboarding | Quest | ✅ Works |  |
+| Clockwork | Quest | ✅ Works |  |
 | Cook-Out | Quest | ✅ Works |  |
 | Creed | Quest | ✅ Works |  |
+| cubism | Quest | ✅ Works |  |
 | Demeter | Quest | ✅ Works |  |
 | Dinosaur Island | Quest | ✅ Works |  |
+| Eleven: Table Tennis VR | PC VR | ✅ Works |  |
 | Espire 2 | Quest | ✅ Works |  |
 | Genotype | Quest | ✅ Works |  |
 | GORN2 | Quest | ✅ Works |  |
@@ -40,6 +45,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Jurassic World Aftermath Collection | Quest | ✅ Works |  |
 | Keep Talking and Nobody Explodes | Quest | ✅ Works |  |
 | Lambda1VR | Quest | ✅ Works |  |
+| Laser Dance | Quest | ✅ Works |  |
 | LEGO® Bricktales | Quest | ✅ Works |  |
 | Lucky's Tale | Quest | ✅ Works |  |
 | Marvel's Deadpool VR | Quest | ✅ Works |  |
@@ -54,6 +60,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | palazzo_santacruz | Quest | ✅ Works |  |
 | Path of the Warrior | Quest | ✅ Works |  |
 | Pistol Whip | Quest | ✅ Works |  |
+| Pistol Whip | PC VR | ✅ Works |  |
 | Please Don't Touch Anything | Quest | ✅ Works |  |
 | PowerWash Simulator VR | Quest | ✅ Works |  |
 | QuestCraft | Quest | ✅ Works |  |
@@ -70,6 +77,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Stremio | Quest | ✅ Works |  |
 | SUPERHOT VR | PC VR | ✅ Works |  |
 | SUPERHOT VR | Quest | ✅ Works |  |
+| SynthRiders | Quest | ✅ Works |  |
 | TetrisEffect | Quest | ✅ Works |  |
 | The Boys VR | Quest | ✅ Works |  |
 | The Climb 2 | Quest | ✅ Works |  |
@@ -79,6 +87,8 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Toy Master | Quest | ✅ Works |  |
 | Under Cover | Quest | ✅ Works |  |
 | Vader Immortal: Episode I | Quest | ✅ Works |  |
+| Vader Immortal: Episode II | Quest | ✅ Works |  |
+| Vader Immortal: Episode III | Quest | ✅ Works |  |
 | VR HOT Quest | Quest | ✅ Works |  |
 | VR4 | Quest | ✅ Works |  |
 | Walkabout Mini Golf | Quest | ✅ Works |  |
@@ -88,7 +98,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Arcsmith | Quest | ⚠️ Works with issues | Right eye distorts during movement (unresolved; swap, tracking, Valve layers, depth and pacing ruled out). |
 | Assassin's Creed Nexus | Quest | ⚠️ Works with issues | Some launch warning text is still upside down; the rest of the UI is fixed by flip emulation. |
 | Does it Stack? | Quest | ⚠️ Works with issues | Mixed reality mode does not work (works on Demeo), everything else seems to be OK |
-| Doom3Quest | Quest | ⚠️ Works with issues | PDA shows black screen. |
+| Doom3Quest | Quest | ⚠️ Works with issues | HUD and PDA show with frame.gl_multiview_fbo (Xandrix1987's headset test, GitHub 77, no frame-rate drop with the PDA open). |
 | Myst | Quest | ⚠️ Works with issues | Minor graphical glitches on some objects. |
 | Phantom: Covert Ops | Quest | ⚠️ Works with issues | DLC/store button crashes (no Meta store). |
 | Pinball FX VR | Quest | ⚠️ Works with issues | Plays; mixed reality mode not working yet. |
@@ -97,6 +107,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Time Stall | Quest | ⚠️ Works with issues | Both eyes distort during movement (unresolved). |
 | WiiCompiled VR | Quest | ⚠️ Works with issues | To add a game: in FramePort's Files tab, upload your .wcgame file to this game's storage, folder Android/data/org.wiicompiled.quest/files/WiiCompiledOpenXRVR… |
 | BlazeRush | Quest | ❌ Doesn't run | Starts and reaches the menu room, but the room shows no controllers and ignores all input (it all reaches the game); no fix yet. |
+| Eleven | Quest | ❌ Doesn't run | Needs the Meta Horizon / Oculus Platform SDK to initialize; stays stuck on the startup screen without Meta's platform service on the Frame. |
 | Espire 1: VR Operative (Quest Edition) | Quest | ❌ Doesn't run | Mesa GL driver crash during texture upload. |
 | HITMAN 3 VR: Reloaded | Quest | ❌ Doesn't run | Vulkan driver crash (freedreno), even without Valve layers. |
 | Journey of the Gods | Quest | ❌ Doesn't run | 32-bit only; the Frame has no AArch32. |
