@@ -16,6 +16,7 @@ from . import (
     langpack,
     ltw_depth,
     manifest_fixes,
+    meta_depth_occlusion,
     ovr_microphone,
     ovr_trace,
     platform_libs,

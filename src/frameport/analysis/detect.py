@@ -295,6 +295,7 @@ def analyze(path: Path, deep: bool = True, data_bytes: int | None = None) -> Ana
             "vivox_api31": vivox_api31,
             "media_codec": media_codec,
             "oculus_xr_plugin": bool(il2cpp_meta) and b"\0m_StereoRenderingModeAndroid\0" in il2cpp_meta,
+            "meta_depth_occlusion": bool(il2cpp_meta) and (b"HARD_OCCLUSION" in il2cpp_meta or b"SOFT_OCCLUSION" in il2cpp_meta),
             # Unity's built-in Oculus support checks for Meta's system apps before VR (frame.unity_oculus_check)
             "unity_oculus_check": b"\0com.oculus.systemactivities\0" in lib_bytes.get("libunity.so", b""),
             # a 2D launcher activity that starts a separate VR activity (frame.start_activity)
