@@ -60,6 +60,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Kill It With Fire VR | Quest | ✅ Works |  |
 | Ladder | Quest | ✅ Works |  |
 | Lambda1VR | Quest | ✅ Works |  |
+| Laser Dance | Quest | ✅ Works |  |
 | LEGO® Bricktales | Quest | ✅ Works |  |
 | Lucky's Tale | Quest | ✅ Works |  |
 | Marvel's Deadpool VR | Quest | ✅ Works |  |
@@ -144,7 +145,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Time Stall | Quest | ⚠️ Works with issues | Both eyes distort during movement (unresolved). |
 | Vermillion | Quest | ⚠️ Works with issues | Runs. |
 | WiiCompiled VR | Quest | ⚠️ Works with issues | To add a game: in FramePort's Files tab, upload your .wcgame file to this game's storage, folder Android/data/org.wiicompiled.quest/files/WiiCompiledOpenXRVR… |
-| Eleven Table Tennis | Quest | ❌ Doesn't run | Stops at the splash screen. |
+| Eleven Table Tennis | Quest | ❌ Doesn't run | Stops at the splash screen. Needs the Meta Horizon / Oculus Platform SDK to initialize; stays stuck on the startup screen without Meta's platform service on the Frame. |
 | Espire 1: VR Operative (Quest Edition) | Quest | ❌ Doesn't run | Mesa GL driver crash during texture upload. |
 | GOLF+ | Quest | ❌ Doesn't run | Black screen. |
 | HITMAN 3 VR: Reloaded | Quest | ❌ Doesn't run | Vulkan driver crash (freedreno), even without Valve layers. |
