@@ -49,6 +49,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | GORN2 | Quest | ✅ Works |  |
 | Gravity Lab | Quest | ✅ Works |  |
 | H.U.N.T | Quest | ✅ Works |  |
+| Hitstream | Quest | ✅ Works |  |
 | I Am Cat | Quest | ✅ Works |  |
 | I Am Monkey | Quest | ✅ Works |  |
 | IEYTD3 | Quest | ✅ Works |  |
@@ -71,6 +72,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Mobile Suit Gundam: Silver Phantom | Quest | ✅ Works |  |
 | Munkr Funkr (The Legacy Days) | Quest | ✅ Works |  |
 | Nano | Quest | ✅ Works |  |
+| Neko Atsume | Quest | ✅ Works |  |
 | NEX Player | Quest | ✅ Works |  |
 | NFL PRO ERA II | Quest | ✅ Works |  |
 | NOPE CHALLENGE | Quest | ✅ Works |  |
@@ -80,6 +82,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Pistol Whip | PC VR | ✅ Works |  |
 | Please Don't Touch Anything | Quest | ✅ Works |  |
 | PowerWash Simulator VR | Quest | ✅ Works |  |
+| Punch Fit | Quest | ✅ Works |  |
 | QuestCraft | Quest | ✅ Works |  |
 | Racket: Nx | Quest | ✅ Works |  |
 | RC Pilot Trainer | Quest | ✅ Works |  |
@@ -92,6 +95,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | RUINSMAGUS | Quest | ✅ Works |  |
 | Shores of Loci | Quest | ✅ Works |  |
 | SilentSlayer | Quest | ✅ Works |  |
+| Smash Drums | Quest | ✅ Works |  |
 | Sniper Elite VR | Quest | ✅ Works |  |
 | Sniper Elite VR: Winter Warrior | Quest | ✅ Works |  |
 | Space Pirate Trainer Quest | Quest | ✅ Works |  |
