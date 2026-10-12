@@ -18,10 +18,10 @@ class HwVideoDecode(Patch):
     id = "frame.hw_video_decode"
     title = "Hardware video decoding (H.264, HEVC, VP9)"
     description = ("Decodes the game's videos on the Frame's hardware video decoder instead of Android's software "
-                   "decoders, which stutter or fall behind with 4K/8K video (e.g. video players, Batman: Arkham "
+                   "decoders, which stutter or fall behind with 4K/8K video (for example video players, Batman: Arkham "
                    "Shadow's cutscenes). Adds FramePort's codec plugin (OMX.frameport.avc/hevc/vp9.decoder) to this "
-                   "game's container only; the APK isn't changed. When the hardware is busy (e.g. Steam's own hardware "
-                   "video decoding is on) the video is decoded in software as before.")
+                   "game's container only; the APK isn't changed. When the hardware is busy (for example Steam's own "
+                   "hardware video decoding is on) the video is decoded in software as before.")
     stage = "install"  # the agent reads it from the recipe at finalize: no APK change
     order = 48
     needs_vr = False  # 2D video apps benefit as much

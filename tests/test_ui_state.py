@@ -30,6 +30,16 @@ def test_outdated():
     assert install_state(game("a"), frame({"package": "com.x", "sha256": "old"})) == "outdated"
 
 
+
+def test_outdated_after_a_newer_apk_was_added():
+    """GitHub #161: re-adding a newer APK of an installed game shows "Update on Frame", not "Reinstall"."""
+    g = game("a")
+    g["build"]["source_version"] = "1.0"
+    g["analysis"] = {"version": "1.0"}
+    assert install_state(g, frame({"package": "com.x", "sha256": "a"})) == "installed"
+    g["analysis"]["version"] = "1.1"
+    assert install_state(g, frame({"package": "com.x", "sha256": "a"})) == "outdated"
+
 # ------------------------------------------------------------------------------------------ library filters / tags
 def lib_games():
     return [
@@ -378,7 +388,7 @@ def test_activity_pins_the_running_job_above_a_long_queue():
     assert order[0] is running and order[1:41] == queued and len(order) == 61
     assert [j.title for j in order[41:43]] == ["done 24", "done 23"]  # finished: newest first, at most 20
     panel = ActivityPanel(SimpleNamespace(jobs=jm, job_followups=lambda j: [], copy=None, show_log_file=None,
-                                          show_activity=None))
+                                          show_activity=None, transit_info=lambda j: {"title": j.title}))
     panel.root.width = 400  # open
     panel.refresh(update=False)
     assert len(panel.pinned.controls) == 1  # the running job, outside the scrolling list
@@ -460,9 +470,12 @@ def test_activity_progress_ticks_only_touch_the_progress_controls(monkeypatch):
     from frameport.ui.views.activity import ActivityPanel
 
     jm = JobManager(save_logs=False)
-    run = Job("running", run=lambda j: None, state="running", created=1, started=1, fraction=0.1)
+    run = Job("running", run=lambda j: None, state="running", created=1, started=1, fraction=0.1,
+              stage="Upload APK", stages=["Patching the game", "Prepare Frame", "Upload APK"])
     jm.jobs = [run, *[Job(f"q{i}", run=lambda j: None, created=2 + i) for i in range(30)]]
-    panel = ActivityPanel(SimpleNamespace(jobs=jm, job_followups=lambda j: [], copy=None, show_log_file=None))
+    info = lambda j: {"title": "Game", "dest": "Frame", "art": None, "icon": None}  # noqa: E731
+    panel = ActivityPanel(SimpleNamespace(jobs=jm, job_followups=lambda j: [], copy=None, show_log_file=None,
+                                          transit_info=info))
     panel.root.width = 400
     updated = []
     monkeypatch.setattr(C, "update", lambda *controls: updated.append(controls))
@@ -471,19 +484,21 @@ def test_activity_progress_ticks_only_touch_the_progress_controls(monkeypatch):
     assert updated[-1] == (panel.root,)  # the first time: everything
     run.fraction = 0.5
     panel.refresh()
-    bar = panel._live[run.id][0]
-    assert bar.value == 0.5 and panel.root not in updated[-1] and bar in updated[-1]
+    transit = panel._live[run.id][0]  # the install transit: (step 3 + half the upload) / 6 steps
+    assert transit.frac == 3.5 / 6 and panel.root not in updated[-1] and transit.control in updated[-1]
+    assert transit.detail.value == "50%"
     assert panel.list.controls == first_list  # nothing rebuilt
 
 
 def test_flet_updates_are_serialized():
     import threading
 
+    from flet.controls.value_types import Prop
     from flet.messaging.session import Session
 
     from frameport.ui.app import serialize_flet_updates
 
-    original = Session.patch_control
+    original, original_set = Session.patch_control, Prop.__set__
     try:
         active, peak = [0], [0]
         guard = threading.Lock()
@@ -505,7 +520,95 @@ def test_flet_updates_are_serialized():
             th.join()
         assert peak[0] == 1
     finally:
-        Session.patch_control = original
+        Session.patch_control, Prop.__set__ = original, original_set
+
+
+def test_serialize_survives_moved_flet_internals(monkeypatch, caplog):
+    """A Flet version without value_types.Prop (or Session.patch_control) must not stop the GUI from starting: that
+    part is skipped and logged, the other still applies."""
+    import logging
+
+    import flet.controls.value_types as value_types
+    from flet.messaging.session import Session
+
+    from frameport.ui import app
+
+    original, original_set = Session.patch_control, value_types.Prop.__set__
+    try:
+        Session.patch_control = lambda self, *a, **k: None
+        monkeypatch.delattr(value_types, "Prop")
+        with caplog.at_level(logging.WARNING):
+            app.serialize_flet_updates()
+        assert getattr(Session.patch_control, "_serialized", False)
+        assert "property writes couldn't be serialized" in caplog.text
+        monkeypatch.undo()
+        monkeypatch.delattr(Session, "patch_control")
+        app.serialize_flet_updates()  # nothing to wrap: no exception
+    finally:
+        monkeypatch.undo()
+        Session.patch_control, value_types.Prop.__set__ = original, original_set
+
+
+def test_property_writes_wait_for_a_patch_being_packed():
+    """A property set on a background thread (the live Frame card, job progress) while the event loop packs a patch
+    changed the control's _values mid-iteration: "dictionary changed size during iteration" killed the update (a
+    sidebar click didn't change the page). Property writes take the patch lock now."""
+    import threading
+    import time
+
+    import flet as ft
+    import msgpack
+    from flet.controls.value_types import Prop
+    from flet.messaging.protocol import configure_encode_object_for_msgpack
+    from flet.messaging.session import Session
+
+    from frameport.ui import app
+
+    original, original_set = Session.patch_control, Prop.__set__
+    try:
+        Session.patch_control = lambda self, *a, **k: None  # (a fresh, unwrapped one, so serialize applies here)
+        app.serialize_flet_updates()
+        # a write waits while a patch holds the lock, and lands right after
+        text = ft.Text("a")
+        with app.FLET_LOCK:
+            th = threading.Thread(target=setattr, args=(text, "tooltip", "tip"))
+            th.start()
+            th.join(0.2)
+            assert th.is_alive() and text.tooltip is None
+        th.join(2)
+        assert text.tooltip == "tip"
+        # the race itself: pack a page-sized tree with Flet's encoder while another thread flips properties
+        texts = [ft.Text(f"t{i}") for i in range(200)]
+        root = ft.Column([ft.Container(t) for t in texts])
+        encode = configure_encode_object_for_msgpack(ft.BaseControl)
+        stop, errors = threading.Event(), []
+
+        def writer():
+            i = 0
+            while not stop.is_set():
+                t = texts[i % len(texts)]
+                t.tooltip = None if t.tooltip else "tip"  # adds / removes a key in _values
+                i += 1
+        th = threading.Thread(target=writer, daemon=True)
+        th.start()
+        end = time.monotonic() + 1.5
+        packs = 0
+        while time.monotonic() < end:
+            try:
+                with app.FLET_LOCK:  # what the serialized patch_control holds
+                    msgpack.packb(root, default=encode)
+                packs += 1
+            except RuntimeError as exc:
+                errors.append(str(exc))
+        stop.set()
+        th.join(2)
+        assert packs > 50 and errors == []
+        # the loop's own handlers set properties during a patch: re-entrant, no deadlock
+        with app.FLET_LOCK:
+            text.color = "red"
+        assert text.color == "red"
+    finally:
+        Session.patch_control, Prop.__set__ = original, original_set
 
 
 def test_window_sessions_share_one_job_queue():

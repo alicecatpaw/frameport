@@ -143,12 +143,12 @@ class UnrealThumbTouch(Patch):
                    "Meta's near-touch sensing, which the Frame never reports: the thumb always points up. Uses the "
                    "touches instead (left X/Y/stick/thumb rest, right A/B/stick/thumb rest). Changes three "
                    "instructions in OculusInput::SendControllerEvents, only where the code matches exactly (UE4 "
-                   "Oculus games of one engine generation, e.g. Vader Immortal, Robo Recall). Found by Klownicle "
-                   "(GitHub #49).")
+                   "Oculus games of one engine generation, for example Vader Immortal, Robo Recall). Found by "
+                   "Klownicle (GitHub #49).")
     order = 47
     note = "OculusInput ThumbUp: from the capacitive touches (left 0x0f00, right 0x000f)"
     reason = ("Unreal's Oculus input animates the thumb from near-touch sensing the Frame lacks (the thumb always "
-              "points up, e.g. Vader Immortal).")
+              "points up, for example Vader Immortal).")
 
     def applies(self, a):
         if a.engine != "Unreal" or "arm64-v8a" not in a.abis:

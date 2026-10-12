@@ -124,7 +124,7 @@ def check(force: bool = False) -> Update | None:
     up = update_from_release(data) if data else None
     if not up or not is_newer(up.version):
         return None
-    if not force and library.setting("update.skipped") == up.version:
+    if not force and hidden(up.version):
         return None
     return up
 
@@ -154,7 +154,7 @@ def cached_update() -> Update | None:
         up = update_from_release(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError):
         return None
-    if not up or not is_newer(up.version) or library.setting("update.skipped") == up.version:
+    if not up or not is_newer(up.version) or hidden(up.version):
         return None
     return up
 
@@ -165,7 +165,183 @@ def cache_age() -> float | None:
 
 
 def skip(version: str) -> None:
+    """"Skip this version": never offered again automatically ("Check now" still finds it)."""
     library.set_setting("update.skipped", version)
+
+
+def snooze(version: str, hours: float = 24) -> None:
+    """The banner's "Later": hide this version for a while (a day by default), then offer it again."""
+    library.set_setting("update.snoozed", {"version": version, "until": time.time() + hours * 3600})
+
+
+def hidden(version: str) -> bool:
+    """True when the user skipped this version, or snoozed it and the snooze hasn't run out yet."""
+    if library.setting("update.skipped") == version:
+        return True
+    snoozed = library.setting("update.snoozed")
+    if isinstance(snoozed, dict) and snoozed.get("version") == version:
+        try:
+            return time.time() < float(snoozed.get("until") or 0)
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+# ------------------------------------------------------------------------------------------------- changelog
+RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=40"
+HISTORY = 5  # releases Settings → Updates → "What's new…" shows
+
+
+@dataclass
+class ChangelogEntry:
+    version: str
+    tag: str
+    date: str               # "2026-10-02" (from published_at), "" when unknown
+    title: str              # the release's name ("FramePort v0.9.0")
+    body: str               # only the "What's new" part of the notes (markdown)
+    page: str = ""
+    dev: bool = False
+
+
+def _section(text: str, heading: str) -> str | None:
+    """The text under a "## <heading>" line up to the next level-1/2 heading (None: no such heading)."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if re.fullmatch(rf"#{{1,3}}\s*{re.escape(heading)}\s*", line.strip(), re.I):
+            out = []
+            for rest in lines[i + 1:]:
+                if re.match(r"#{1,2}\s", rest.strip()):
+                    break
+                out.append(rest)
+            return "\n".join(out).strip()
+    return None
+
+
+# what CI adds to every release's notes besides "What's new" (.github/workflows/build.yml)
+_BOILERPLATE = (re.compile(r"^FramePort v?\S+: Windows.*\n?", re.M),
+                re.compile(r"^Already have FramePort\?.*\n?", re.M),
+                re.compile(r"^Dev build \*\*.*\n(?:.+\n)*", re.M))
+
+
+def whats_new(notes: str) -> str:
+    """Only what changed, from a release's notes: the "What's new" section; else the notes without CI's intro line,
+    the "Already have FramePort?" hint and the install footer (packaging/release-footer.md: everything from
+    "## Install"). Dev builds keep their "Please test" and "Changes since …" parts."""
+    text = (notes or "").replace("\r\n", "\n")
+    found = _section(text, "What's new")
+    text = found if found is not None else re.split(r"^#{1,3}\s*Install\s*$", text, maxsplit=1, flags=re.M | re.I)[0]
+    for pattern in _BOILERPLATE:
+        text = pattern.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def changelog_entries(releases) -> list[ChangelogEntry]:
+    """Every usable release of a GitHub releases list, newest first: published stable releases plus the rolling `dev`
+    pre-release (version from its wheel, as in check_dev). Bad data gives fewer entries, never an error."""
+    out: dict[str, ChangelogEntry] = {}
+    for rel in releases if isinstance(releases, list) else []:
+        if not isinstance(rel, dict) or rel.get("draft") or not rel.get("tag_name"):
+            continue
+        dev = rel.get("tag_name") == "dev"
+        if rel.get("prerelease") and not dev:
+            continue
+        up = update_from_release(rel, asset_name="", dev=dev)
+        if not up or not re.match(r"v?\d", up.version):
+            continue
+        out.setdefault(up.version, ChangelogEntry(
+            version=up.version, tag=up.tag, date=(up.published or "")[:10], title=rel.get("name") or up.tag,
+            body=whats_new(up.notes), page=up.page, dev=dev))
+    return sorted(out.values(), key=lambda e: parse_version(e.version), reverse=True)
+
+
+def is_dev_version(version: str) -> bool:
+    return parse_version(version)[4] > 0
+
+
+def between(entries: list[ChangelogEntry], after: str | None, upto: str,
+            include_dev: bool | None = None) -> list[ChangelogEntry]:
+    """Entries newer than `after` (None: no lower bound) up to and including `upto`, newest first. The dev build
+    counts only with include_dev (default: when `upto` is a dev build = the user is on or choosing one). Skipped
+    versions stay in: whoever updates past them gets their changes too."""
+    if include_dev is None:
+        include_dev = is_dev_version(upto)
+    low = parse_version(after) if after else None
+    high = parse_version(upto)
+    return [e for e in entries if (include_dev or not e.dev) and parse_version(e.version) <= high
+            and (low is None or parse_version(e.version) > low)]
+
+
+def fetch_changelog(force: bool = False, need: str | None = None) -> list[ChangelogEntry]:
+    """The releases list as entries (cached like the update check: 6 h; offline → the last copy; nothing → []; never
+    raises). `need`: a version that should be listed (just offered or just installed): a cached list that is older
+    than it is fetched again."""
+    try:
+        data = cache.cached_json("app-releases.json", RELEASES_API, max_age=0 if force else CHECK_EVERY, fallback=[])
+        entries = changelog_entries(data)
+        newest = entries[0].version if entries else "0"
+        if need and not force and all(e.version != need for e in entries) and is_newer(need, newest):
+            entries = changelog_entries(cache.cached_json("app-releases.json", RELEASES_API, max_age=0,
+                                                          fallback=data)) or entries
+        return entries
+    except Exception:  # noqa: BLE001
+        _log.debug("changelog unavailable", exc_info=True)
+        return []
+
+
+def entry_from_update(up: Update) -> ChangelogEntry:
+    return ChangelogEntry(version=up.version, tag=up.tag, date=(up.published or "")[:10], title=up.tag,
+                          body=whats_new(up.notes), page=up.page, dev=is_dev_version(up.version))
+
+
+def changelog_for(up: Update, installed: str = __version__,
+                  entries: list[ChangelogEntry] | None = None) -> list[ChangelogEntry]:
+    """The update dialog's changelog: every version after the installed one up to the offered one, newest first. The
+    offered release is always in it (from its own notes when the list doesn't have it yet)."""
+    if entries is None:
+        entries = fetch_changelog(need=up.version)
+    out = between(entries, installed, up.version)
+    if all(e.version != up.version for e in out):
+        out.insert(0, entry_from_update(up))
+    return out
+
+
+def recent_history(entries: list[ChangelogEntry], upto: str = __version__, n: int = HISTORY) -> list[ChangelogEntry]:
+    """Settings → Updates → "What's new…": the installed version and the ones before it (n in all), newest first."""
+    return between(entries, None, upto)[:n]
+
+
+def news_range(last_seen: str | None, current: str = __version__, used_before: bool = False) -> tuple[bool, str | None]:
+    """Which changes to show once after an update: (show, after). Nothing on the first start ever, for the same
+    version or an older one. after=None (with show): only `current`'s own entry, for an update from a version that
+    didn't record last_seen yet (`used_before`: FramePort ran before, e.g. setting update.last_check exists)."""
+    if not last_seen:
+        return used_before, None
+    if parse_version(current) > parse_version(last_seen):
+        return True, last_seen
+    return False, None
+
+
+def pending_news(current: str = __version__, entries: list[ChangelogEntry] | None = None) -> list[ChangelogEntry]:
+    """The changes of the versions installed since FramePort last ran (setting update.last_seen_version), to show
+    once. Records `current` as seen, except when the changelog couldn't be loaded (offline: tried again at the next
+    start). Also covers "Install updates automatically": the new version starts with the old last_seen."""
+    last = library.setting("update.last_seen_version")
+    last = last if isinstance(last, str) else None
+    show, after = news_range(last, current, used_before=bool(library.setting("update.last_check")))
+    if not show:
+        if last != current:
+            mark_seen(current)
+        return []
+    if entries is None:
+        entries = fetch_changelog(need=current)
+    found = between(entries, after, current) if after else [e for e in entries if e.version == current]
+    if entries:  # loaded (even when it lists nothing for this version, e.g. a newer dev build replaced ours)
+        mark_seen(current)
+    return found
+
+
+def mark_seen(version: str = __version__) -> None:
+    library.set_setting("update.last_seen_version", version)
 
 
 # ------------------------------------------------------------------------------------------------- how installed
@@ -304,12 +480,27 @@ def _extract(archive: Path, dest: Path, platform: str) -> Path:
     return folder
 
 
+# set by the running app's Flutter host / embedded Python for *this* process (its server socket, its temporary
+# extraction folder, …): a relaunched FramePort that inherits them talks to the old, gone app and its window stays
+# black (GitHub #195)
+APP_ENV_PREFIXES = ("FLET_", "SERIOUS_PYTHON")
+APP_ENV_NAMES = ("PYTHONHOME", "PYTHONPATH", "PYTHONNOUSERSITE", "PYTHONINSPECT", "PYTHONDONTWRITEBYTECODE")
+
+
+def clean_env(env: dict | None = None) -> dict:
+    """The environment for the swap script and the FramePort it relaunches: without the running app's own Flet and
+    embedded-Python variables."""
+    env = dict(os.environ if env is None else env)
+    return {k: v for k, v in env.items()
+            if not k.upper().startswith(APP_ENV_PREFIXES) and k.upper() not in APP_ENV_NAMES}
+
+
 def _powershell() -> tuple[str, dict]:
     """Windows PowerShell 5.1 (always installed) and an environment it can load its own modules in: started from
     PowerShell 7 (pwsh), PSModulePath points at pwsh's modules and 5.1 fails to load Microsoft.PowerShell.Security /
     .Management (Get-AuthenticodeSignature, Copy-Item). Without PSModulePath it rebuilds its default."""
     exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    env = {k: v for k, v in clean_env().items() if k.upper() != "PSMODULEPATH"}
     return (str(exe) if exe.exists() else "powershell"), env
 
 
@@ -507,7 +698,8 @@ def apply(app: Path, target: Path | None = None, relaunch: bool = True, pid: int
                              "Hidden", "-File", str(script)], env=env)
     else:
         proc = subprocess.Popen(["/bin/sh", str(script)], start_new_session=not wait, close_fds=True,
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=clean_env())
     if not wait:  # make sure the script really runs before FramePort quits (it logs first thing)
         deadline = time.time() + START_TIMEOUT
         while time.time() < deadline:

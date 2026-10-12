@@ -551,10 +551,11 @@ def test_pipeline_save_known_good(tmp_path, monkeypatch):
 
 
 def test_every_patch_has_a_plain_summary():
-    """The game page shows patch.summary by default (plain words); adapter settings use the Game settings dialog."""
+    """The game page shows patch.summary by default (plain words); Game settings (adapter.*) use their help line
+    from the Game settings dialog (patches/settings.UI), else patches/summaries.py."""
     from frameport.patches import base
 
-    missing = [p.id for p in base.all_patches() if p.category != "adapter" and not p.summary]
+    missing = [p.id for p in base.all_patches() if not p.summary]
     assert not missing, f"add plain summaries to patches/summaries.py: {missing}"
 
 
@@ -918,3 +919,35 @@ def test_bonelab_recipe_serves_both_builds():
     old, new = _analysis(engine="Unity", libs=libs), _analysis(engine="Unity", libs=libs + ["libSLZQuestNative.so"])
     assert presence.applies(old) and presence.applies(new)
     assert not hooks.applies(old) and hooks.applies(new)
+
+
+def test_ovr_stable_user_pins_the_made_up_user_id():
+    """GitHub #182: OVRPort makes up a new user id at every start (6e18 + random()); games lose saves filed under it."""
+    from frameport.analysis import elf
+    from frameport.patches.frame.ovr_stable_user import BASE_ID, find_helper, pin_user_id, stable_id
+
+    lib = _fixture("libfakestableuser_arm64.so")
+    assert find_helper(lib) is not None
+    uid = stable_id("com.example.game", b"keystore")
+    assert BASE_ID <= uid < BASE_ID + 2**32
+    assert uid == stable_id("com.example.game", b"keystore") != stable_id("com.example.other", b"keystore")
+    assert uid != stable_id("com.example.game", b"another user's keystore")
+    out = pin_user_id(lib, uid)
+    assert out is not None and len(out) == len(lib)
+    ins = [(m, o) for _, m, o in elf.text_instructions(out)]
+    start = next(i for i, (m, o) in enumerate(ins) if m == "mov" and o.startswith("x0,") and ins[i + 1][0] == "movk")
+    assert [m for m, _ in ins[start:start + 5]] == ["mov", "movk", "movk", "movk", "ret"]
+    value = 0
+    for i, (_, o) in enumerate(ins[start:start + 4]):
+        imm = int(o.split("#")[1].split(",")[0], 0)
+        value |= imm << (16 * i)
+    assert value == uid
+    assert not any(m == "bl" for m, _ in ins[start:start + 5])  # random() isn't called any more
+    assert pin_user_id(out, uid) is None  # idempotent
+    assert pin_user_id(_fixture("libfakemicrophone_arm64.so"), uid) is None  # not OVRPort's helper
+
+
+def test_ovr_stable_user_suggested_for_platform_games():
+    p = base.get("frame.ovr_stable_user")
+    assert p.detect(_analysis(engine="Unity", libs=["libovrplatformloader.so", "libunity.so"])).recommended
+    assert p.detect(_analysis(engine="Unity", libs=["libunity.so"])) is None

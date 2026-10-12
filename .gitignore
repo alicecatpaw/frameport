@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 .venv/
 build/
@@ -25,3 +25,13 @@ REPORT.md
 FramePort-windows-x64/
 FramePort-windows-x64.zip
 *.spec
+
+# project page (site/)
+site/node_modules/
+site/dist/
+site/.astro/
+site/public/media/
+site/src/assets/media/
+site/media-hq/
+site/public/s
+site/public/setup.sh

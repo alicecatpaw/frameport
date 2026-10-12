@@ -1,14 +1,14 @@
-# Diagnostics bundles and shared recipes
+# Diagnostics and problem reports
 
 Two ways users feed results back, both without a GitHub token:
 
-- **Share working config** (game menu, `frameport share-recipe <pkg>`): saves the recipe as a user catalog entry and
+- **Share working recipe…** (game menu, `frameport share-recipe <pkg>`): saves the recipe as a user catalog entry and
   opens a prefilled issue from `.github/ISSUE_TEMPLATE/working-config.yml`. A maintainer checks it and adds the label
   `catalog-accepted`. Then `.github/workflows/catalog-from-issue.yml` runs `scripts/catalog_from_issue.py`, which reads
   only the YAML block, validates it, and writes `catalog/games/<pkg>.yaml`, and the workflow opens a PR.
   - The PR step needs Settings → Actions → "Allow GitHub Actions to create and approve pull requests".
   - Create the labels `working-config`, `catalog-accepted` and `bug` once.
-- **Report a problem / Collect logs** (game menu, Settings, the failure pop-up, `frameport diag report|collect`): writes
+- **Report a problem…** / **Collect logs** (game menu, Settings, the failure pop-up, `frameport diag report|collect`): writes
   a redacted zip and opens a prefilled `bug-report.yml` issue.
   - GitHub has no API for issue attachments, so the user drags the zip in (25 MB max; the bundle stays under 24 MB).
   - Prefilled links are capped at about 7.5k characters. Free text is trimmed first; the recipe is never cut.
@@ -40,8 +40,22 @@ games/<pkg>/target/          from the Frame (or the PC): launch.sh, settings.con
                              ReviveInjector.txt / steam-<appid>.log / game-log-N.txt (PC VR), files.json (+ missing)
                              (game-log-N.txt: Unreal Saved/Logs + crash summaries, Unity Player.log / Player-prev.log /
                              output_log.txt + crash error.log from the Proton prefix, agent v67)
+                             threads.txt (agent v79): saved while a Quest game runs (e.g. hangs), each thread's
+                             state, CPU ms over 2 s, kernel wait and syscall, plus its TCP sockets (remote = loopback /
+                             local / internet + port, no addresses); read once from /proc, the game isn't paused
+games/<pkg>/target/shaders/  shader dumps (agent v72), when the game wrote any:
+    fp_vk_shaders/           adapter vk_shader_dump=1 (Vulkan shim): <size>_<sha256>.spv + index.txt
+    fp_spirv/                adapter zink_shader_dump=1 (OpenGL ES, shader-fix layer under Zink): <size>_<sha256>.spv
 ```
-Each log keeps at most its last 4 MB (2 MB per file from the Frame).
+Each log keeps at most its last 4 MB (2 MB per file from the Frame). Shader dumps, SPIR-V unchanged (compiled game
+shaders, not redacted): Vulkan (agent v74) every module the game's newest run (the last `# start` in `index.txt`)
+created, last used first, each up to 4 MB and up to 30 MB in all, with that run's index lines, so a module created
+well before a GPU hang comes along too (if the zip would pass 24 MB, the least recently used ones are left out
+after the logs were cut); OpenGL ES (no index): the newest modules (by time written) up to 4 MB.
+`index.txt` (Vulkan) lists every vkCreateShaderModule as
+`<seq> <ms since the first module> <unix ms> <size>_<sha256>.spv new|known|again|failed`; match the unix time with
+the kernel's `hangcheck detected gpu lockup` line (this-boot-kernel.txt). All modules stay in the game's storage on
+the Frame (`Android/data/<pkg>/files/fp_vk_shaders/`, Files tab → the game's storage).
 
 ## Redaction
 `diag/redact.py` runs on every file and on the issue text.
@@ -49,14 +63,14 @@ Each log keeps at most its last 4 MB (2 MB per file from the Frame).
   saved Frame addresses → `<host>`, Steam account ids from the Frame's `info` and the PC's Steam → `<steam-id>`, the
   folders holding the user's game dumps → `<source>`.
 - **Patterns:** IPv4 addresses (first octet ≥ 10, so version numbers survive), IPv6, MAC, SteamID64, `userdata/<id>`,
-  e-mail addresses (file names like `x@123.txt` excluded), and any `/home/<u>`, `/Users/<u>`, `C:\Users\<u>` or
+  email addresses (file names like `x@123.txt` excluded), and any `/home/<u>`, `/Users/<u>`, `C:\Users\<u>` or
   `/mnt/c/Users/<u>`.
 - **Kept:** generic accounts that identify no one: `steamos`, `steamuser` (Proton), `root`, `deck`.
 
 ## Debugging from a bundle (no game, no Frame, no GUI)
 1. `frameport diag inspect <zip>` (`--json` for everything). It prints the versions and warnings, the last launch
    test, and a fresh triage of the newest launch log with the current `catalog/triage.yaml`.
-2. Match the findings and log lines against `docs/PLAYBOOK.md` (symptom → fix) and `docs/FRAME_RUNTIME.md`.
+2. Match the findings and log lines against `docs/PLAYBOOK.md` (symptom → cause → fix) and `docs/FRAME_RUNTIME.md`.
 3. Check the analysis in `entry.json` (engine, XR API, `extra`: missing ovr symbols, features, Unreal version) and
    `package/elf.json` against the heuristics in CLAUDE.md. Compare `recipe.yaml` with catalog games that use the same
    engine and API.

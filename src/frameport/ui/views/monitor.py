@@ -1,13 +1,14 @@
 """Monitor: a live view of the Frame — the running game (fps, CPU/GPU/memory), CPU, GPU, memory, temperatures, power
-and battery with 2-minute sparklines, and its processes (end or kill one, end a game). Streamed by the agent's
-`_monitor` session (frame/monitor.py) only while the tab is shown: app.go / app.disconnect / closing the window call
-stop(), and the agent ends the stream at EOF, so nothing keeps running on the Frame.
+and battery with 2-minute sparklines, and its processes (end or kill one, end a game). Fed by the app's MonitorHub
+(frame/monitor_hub.py; one agent `_monitor` stream shared with the sidebar's live Frame card): the view subscribes to
+everything only while the tab is shown (app.go / app.disconnect / closing the window call stop()); the hub connects,
+reconnects and ends the stream when nobody needs it.
 
 Built once and updated in place (CLAUDE.md performance rules): a tick changes values, colours and sparkline paths;
 the process table is a fixed pool of rows re-bound to the newest data, so clicks and menus keep working."""
 from __future__ import annotations
 
-import threading
+import time
 from typing import TYPE_CHECKING
 
 import flet as ft
@@ -16,6 +17,7 @@ from ...errors import explain
 from ...frame import monitor as M
 from ...i18n import tr
 from .. import components as C
+from .. import easter
 from .. import theme as T
 
 if TYPE_CHECKING:
@@ -23,11 +25,21 @@ if TYPE_CHECKING:
 
 ROWS = 50            # process rows shown at most (the agent sends up to 150; the search narrows them)
 DETAIL_HEIGHT = 250  # the three detail cards share one height (px at 100 %)
-RETRY_SECONDS = 5    # reconnect after the stream was lost, while the tab is open
-LEVEL_COLOR = {"ok": T.TEXT, "warn": T.WARN, "error": T.ERROR}
-GROUP_COLOR = {"Game": T.ACCENT, "Steam": T.INFO, "SteamVR": T.PC, "Desktop": T.TEXT_2, "Other": T.TEXT_3}
-CLUSTER_COLORS = (T.INFO, T.ACCENT, T.PC, T.OK)
-POWER_COLORS = (T.INFO, T.ACCENT, T.PC, T.TEXT_3)  # CPU, GPU, NPU, other
+LEVEL_COLOR: dict[str, str] = {}
+GROUP_COLOR: dict[str, str] = {}
+CLUSTER_COLORS: list[str] = []
+POWER_COLORS: list[str] = []  # CPU, GPU, NPU, other
+
+
+def _fill_colors() -> None:
+    """(Re)fill the colour maps with the active theme's colours, in place (theme switches)."""
+    LEVEL_COLOR.update({"ok": T.TEXT, "warn": T.WARN, "error": T.ERROR})
+    GROUP_COLOR.update({"Game": T.ACCENT, "Steam": T.INFO, "SteamVR": T.PC, "Desktop": T.TEXT_2, "Other": T.TEXT_3})
+    CLUSTER_COLORS[:] = [T.INFO, T.ACCENT, T.PC, T.OK]
+    POWER_COLORS[:] = [T.INFO, T.ACCENT, T.PC, T.TEXT_3]
+
+
+T.on_change(_fill_colors)
 
 
 def label(name: str) -> str:
@@ -68,7 +80,7 @@ class ProcRow:
     def __init__(self, view: MonitorView):
         self.view, self.proc = view, None
         self.lock = ft.Icon(ft.Icons.LOCK_OUTLINE_ROUNDED, size=T.px(14), color=T.WARN, visible=False,
-                            tooltip=tr("Ending this stops Steam, SteamVR or the desktop"))
+                            tooltip=tr("Ending this stops Steam, SteamVR or the desktop."))
         self.chevron = ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=T.px(16), color=T.TEXT_2, visible=False)
         self.indent = ft.Container(width=T.px(22), visible=False)
         self.name = ft.Text("", size=T.T_BODY, color=T.TEXT, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
@@ -121,9 +133,9 @@ class ProcRow:
         self.group_box.bgcolor = T.soft(color, 0.12)
         self.lock.visible = bool(p.get("critical") or p.get("locked"))
         self.lock.color = T.TEXT_3 if p.get("locked") else T.WARN
-        self.cpu.value = f"{p.get('cpu', 0):.1f} %"
+        self.cpu.value = f"{p.get('cpu', 0):.1f}%"
         self.cpu.color = LEVEL_COLOR[M.level("cpu", p.get("cpu"))] if p.get("cpu", 0) >= 1 else T.TEXT_2
-        self.gpu.value = f"{p['gpu']:.0f} %" if p.get("gpu") else "–"
+        self.gpu.value = f"{p['gpu']:.0f}%" if p.get("gpu") else "–"
         self.mem.value = M.fmt_bytes(p.get("rss"))
         self.age.value = M.fmt_duration(p.get("age"))
 
@@ -131,10 +143,7 @@ class ProcRow:
 class MonitorView:
     def __init__(self, app: FramePortApp):
         self.app = app
-        self.session = None          # frame.monitor.MonitorSession while the tab is open
-        self._connecting = False
-        self._gen = 0                # bumped by stop(): a connect that finishes after the tab was left closes itself
-        self.stopped = True
+        self.stopped = True          # not subscribed to the app's monitor hub (the tab isn't shown)
         self.root = None
         self.history = M.History()
         self.static: dict = {}
@@ -151,17 +160,16 @@ class MonitorView:
 
     # ---------------------------------------------------------------- building
     def _build(self) -> None:
-        self.live_dot = C.dot(T.TEXT_3, T.px(8))
+        self.live_dot = C.dot(T.TEXT_3, 8)
         self.live_text = C.meta(tr("Connecting…"))
         self.live = ft.Container(ft.Row([self.live_dot, self.live_text], spacing=T.S2, tight=True),
                                  bgcolor=T.SURFACE_3, border_radius=T.px(20),
                                  padding=ft.Padding(T.px(10), T.px(5), T.px(12), T.px(5)))
         self.overhead = C.meta("")
-        self.interval = ft.Dropdown(value=f"{M.DEFAULT_INTERVAL:g}", dense=True, width=T.px(150),
-                                    border_color=T.BORDER, text_size=T.T_BODY,
+        self.interval = C.dropdown(value=f"{M.DEFAULT_INTERVAL:g}", width=T.px(150),
                                     options=[ft.DropdownOption(f"{s:g}", tr("Every {n}").format(n=M.fmt_interval(s)))
                                              for s in M.INTERVALS],
-                                    on_select=self._set_interval, tooltip=tr("How often the Frame sends new numbers"))
+                                    on_select=self._set_interval, tooltip=tr("How often the Frame sends new numbers."))
         self.pause_btn = C.icon_btn(ft.Icons.PAUSE_ROUNDED, tr("Pause"), lambda e: self.toggle_pause())
         self.reconnect = C.secondary(tr("Reconnect"), ft.Icons.REFRESH_ROUNDED, lambda e: self.start())
         self.reconnect.visible = False
@@ -175,13 +183,22 @@ class MonitorView:
         self.game_fps = ft.Text("–", size=T.px(40), weight=ft.FontWeight.W_700, color=T.TEXT)
         self.game_fps_sub = C.meta(tr("frames per second"))
         self.game_spark = C.Sparkline(T.OK, height=48)
+        self._perfect = easter.PerfectPacing()  # (easter egg: a minute right on target)
+        self._perfect_until = 0.0
+        self._perfect_on = False
+        self._perfect_beat = False
+        self.perfect_pill = C.pill(tr("Perfect pacing"), T.ACCENT, ft.Icons.AUTO_AWESOME, solid=True)
+        self.perfect_pill.visible = False
+        self.game_fps.scale = 1.0
+        self.game_fps.animate_scale = ft.Animation(380, ft.AnimationCurve.EASE_OUT_BACK)
         self.game_stats = C.body("", T.TEXT_2)
         self.end_btn = C.secondary(tr("End game"), ft.Icons.STOP_CIRCLE_OUTLINED, lambda e: self.ask_end_game())
         self.page_btn = C.ghost(tr("Game page"), ft.Icons.OPEN_IN_NEW_ROUNDED,
                                 lambda e: self.game_pkg and self.app.open_game(self.game_pkg))
         self.game_card = C.card(ft.Row([
             self.game_art,
-            ft.Column([C.pill(tr("Running now"), T.OK, ft.Icons.PLAY_ARROW_ROUNDED), self.game_title, self.game_sub,
+            ft.Column([ft.Row([C.pill(tr("Running now"), T.OK, ft.Icons.PLAY_ARROW_ROUNDED), self.perfect_pill],
+                              spacing=T.S2), self.game_title, self.game_sub,
                        self.game_stats, ft.Row([self.end_btn, self.page_btn], spacing=T.S2)],
                       spacing=T.px(6), expand=3),
             ft.Column([ft.Row([self.game_fps, self.game_fps_sub], spacing=T.S2,
@@ -191,11 +208,14 @@ class MonitorView:
         ], spacing=T.S4, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=T.S4, visible=False,
             bgcolor=T.soft(T.ACCENT, 0.06))
         self.game_card.border = ft.Border.all(1, T.soft(T.ACCENT, 0.35))
+        # (perfect pacing puts these back; its glow needs an opaque card, else it shows through the tint)
+        self._card_look = (self.game_card.border, self.game_card.shadow, self.game_card.bgcolor)
+        self.game_card.animate = ft.Animation(450, ft.AnimationCurve.EASE_IN_OUT)
 
         # metric tiles
         self.t_cpu = Tile(tr("CPU"), ft.Icons.MEMORY_ROUNDED, T.INFO, hi=100)
         self.t_gpu = Tile(tr("GPU"), ft.Icons.VIEW_IN_AR_ROUNDED, T.ACCENT, hi=100, help_key="monitor_gpu")
-        self.t_mem = Tile(tr("Memory"), ft.Icons.STORAGE_ROUNDED, T.PC, hi=100, help_key="monitor_pressure")
+        self.t_mem = Tile(tr("Memory"), ft.Icons.STORAGE_OUTLINED, T.PC, hi=100, help_key="monitor_pressure")
         self.t_temp = Tile(tr("Temperature"), ft.Icons.THERMOSTAT_ROUNDED, T.WARN)
         self.t_power = Tile(tr("Power"), ft.Icons.BOLT_ROUNDED, T.OK, help_key="monitor_power")
         self.t_bat = Tile(tr("Battery"), ft.Icons.BATTERY_STD_ROUNDED, T.OK, hi=100)
@@ -226,13 +246,10 @@ class MonitorView:
         self.details_btn = C.ghost(tr("Show details"), ft.Icons.EXPAND_MORE_ROUNDED, lambda e: self.toggle_details())
 
         # processes
-        self.filter = ft.SegmentedButton(
-            segments=[ft.Segment("game", label=tr("Game")), ft.Segment("steam", label=tr("Steam & SteamVR")),
-                      ft.Segment("all", label=tr("All"))],
-            selected=["game"], show_selected_icon=False, on_change=self._set_filter)
-        self.search = ft.TextField(hint_text=tr("Search name, PID or game"), dense=True, width=T.px(240),
-                                   border_color=T.BORDER, prefix_icon=ft.Icons.SEARCH_ROUNDED,
-                                   on_change=lambda e: self._bind_rows(update=True))
+        self.filter = C.segmented([("game", tr("Game")), ("steam", tr("Steam and SteamVR")), ("all", tr("All"))],
+                                  "game", self._set_filter)  # .data = the selected filter
+        self.search = C.search(hint_text=tr("Search name, PID or game"), width=T.px(240),
+                               on_change=lambda e: self._bind_rows(update=True))
         self.sort_btns: dict[str, ft.TextButton] = {}
         left, right = ft.Alignment.CENTER_LEFT, ft.Alignment.CENTER_RIGHT
         header_cells = [ft.Container(self._sort_btn("name", tr("Name")), expand=True, alignment=left),
@@ -247,8 +264,8 @@ class MonitorView:
                                    border=ft.Border(bottom=ft.BorderSide(1, T.BORDER)))
         self.rows = [ProcRow(self) for _ in range(ROWS)]
         self.proc_note = C.meta("")
-        self.no_game = C.callout(tr("No FramePort game is running. Start one in the headset or with Play, or switch "
-                                    "the filter to see everything on the Frame."), icon=ft.Icons.SPORTS_ESPORTS_ROUNDED)
+        self.no_game = C.callout(tr("No FramePort game is running. Start one, or switch the filter to see everything."),
+                                 icon=ft.Icons.SPORTS_ESPORTS_OUTLINED)
         self.no_game.visible = False
         self.menu = ft.ContextMenu(content=C.card(ft.Column(
             [self.header, ft.Column([r.control for r in self.rows], spacing=0), self.proc_note],
@@ -268,10 +285,18 @@ class MonitorView:
         if not (app.target and app.frame_state == "connected"):
             return ft.Column([
                 app.top_bar(heading, sub),
-                C.empty_state(ft.Icons.MONITOR_HEART_OUTLINED, tr("Connect your Frame first"),
-                              tr("The monitor shows your Frame's games, load, temperatures and battery live once "
-                                 "FramePort is connected to it."),
-                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")))], expand=True)
+                C.empty_state(ft.Icons.MONITOR_HEART_OUTLINED, tr("Your Frame at a glance"),
+                              tr("Connect to your Steam Frame to watch its games, load, temperatures and battery "
+                                 "live."),
+                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")),
+                              features=[
+                                  (ft.Icons.SPEED_ROUNDED, tr("Frame rate"),
+                                   tr("The running game's frames per second, as it plays.")),
+                                  (ft.Icons.THERMOSTAT_ROUNDED, tr("Load and temperatures"),
+                                   tr("CPU, GPU, memory, temperatures, power and battery.")),
+                                  (ft.Icons.LIST_ALT_ROUNDED, tr("Processes"),
+                                   tr("What's running, and a way to end what's stuck.")),
+                              ])], expand=True)
         if self.root is None:
             self.root = ft.Column([
                 app.top_bar(heading, sub, [self.overhead, self.live, self.reconnect, self.interval, self.pause_btn]),
@@ -288,74 +313,63 @@ class MonitorView:
         return self.root
 
     # ---------------------------------------------------------------- session
+    @property
+    def hub(self):
+        return self.app.monitor_hub
+
     def start(self) -> None:
+        """Subscribe to the app's monitor hub (everything, at the chosen interval); the hub connects, reconnects
+        after a lost stream and shares it with the sidebar's live Frame card."""
         self.stopped = False
-        if self.session is not None or self._connecting:
+        hub = self.hub
+        if hub.subscribed("monitor"):
+            hub.reconnect()  # the Reconnect button (after an error)
             return
-        self._connecting = True
         self._set_live(tr("Connecting…"), T.TEXT_3, update=self.root is not None)
-        gen, target = self._gen, self.app.target
-        self.app.run_bg(self._connect, gen, target)
-
-    def _connect(self, gen: int, target) -> None:
-        try:
-            session = M.MonitorSession(target.frame, lambda s, g=gen: self._on_sample(g, s),
-                                       lambda why, g=gen: self._on_end(g, why))
-        except Exception as exc:  # noqa: BLE001
-            self._connecting = False
-            if gen == self._gen:
-                self._set_live(tr("Not connected: {error}").format(error=explain(exc)), T.ERROR)
-            return
-        self._connecting = False
-        if gen != self._gen:  # the tab was left while connecting
-            session.close()
-            return
-        self.session = session
-        if session.static != self.static:
-            self.static = session.static
-            self._build_static()
-        if self.interval.value != f"{M.DEFAULT_INTERVAL:g}":
-            session.set_interval(float(self.interval.value))
-        if self.filter.selected != ["game"]:
-            session.set_filter(self.filter.selected[0])
+        hub.set_filter(self.filter.data)
+        hub.subscribe("monitor", "all", float(self.interval.value), self._on_sample, self._on_state)
         if self.paused:
-            session.pause(True)
-        self._set_live(tr("Live"), T.OK)
+            hub.pause("monitor", True)
 
-    def _on_end(self, gen: int, why: str) -> None:
-        if gen != self._gen:
+    def _on_state(self, name: str, state: str, detail) -> None:
+        """The hub's stream state (its connect/reader/timer threads)."""
+        if self.stopped:
             return
-        self.session = None
-        self._set_live(tr("Connection lost, reconnecting…"), T.WARN)
-        timer = threading.Timer(RETRY_SECONDS, lambda: gen == self._gen and not self.stopped and self.start())
-        timer.daemon = True
-        timer.start()
+        if state == "connecting":
+            self._set_live(tr("Connecting…"), T.TEXT_3)
+        elif state == "live":
+            static = self.hub.static
+            if static and static != self.static:
+                self.static = static
+                self._build_static()
+            self._set_live(tr("Live"), T.OK)
+        elif state == "lost":
+            self._set_live(tr("Connection lost, reconnecting…"), T.WARN)
+        elif state == "error":
+            self._set_live(tr("Not connected: {error}").format(error=explain(detail)), T.ERROR)
 
     def stop(self) -> None:
-        """End the stream (leaving the tab, disconnecting, closing the app)."""
-        self._gen += 1
+        """Stop receiving (leaving the tab, disconnecting, closing the app); the hub ends the stream when nobody else
+        (the live Frame card) needs it."""
         self.stopped = True
-        session, self.session = self.session, None
-        if session is not None:
-            session.close()
+        self.hub.unsubscribe("monitor")
 
     def _set_live(self, text: str, color: str, update: bool = True) -> None:
         self.live_text.value, self.live_dot.bgcolor = text, color
         self.reconnect.visible = color == T.ERROR
         if update:
-            C.update(self.live, self.reconnect)
+            self._updater()(self.live, self.reconnect)
 
     def _set_interval(self, e) -> None:
-        if self.session:
-            self.session.set_interval(float(self.interval.value))
+        self.hub.update("monitor", interval=float(self.interval.value))
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
-        if self.session:
-            self.session.pause(self.paused)
+        self.hub.pause("monitor", self.paused)  # paused: no samples here (the card keeps its own)
         self.pause_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED if self.paused else ft.Icons.PAUSE_ROUNDED
         self.pause_btn.tooltip = tr("Resume") if self.paused else tr("Pause")
-        self._set_live(tr("Paused") if self.paused else tr("Live"), T.TEXT_3 if self.paused else T.OK, update=False)
+        if self.paused:
+            self._set_live(tr("Paused"), T.TEXT_3, update=False)
         C.update(self.pause_btn, self.live)
 
     def toggle_details(self) -> None:
@@ -366,10 +380,8 @@ class MonitorView:
         self.details_btn.icon = ft.Icons.EXPAND_LESS_ROUNDED if self.details.visible else ft.Icons.EXPAND_MORE_ROUNDED
         C.update(self.details, self.details_btn)
 
-    def _set_filter(self, e) -> None:
-        which = (self.filter.selected or ["game"])[0]
-        if self.session:
-            self.session.set_filter(which)
+    def _set_filter(self, which: str) -> None:
+        self.hub.set_filter(which)
 
     def set_sort(self, key: str) -> None:
         if self.sort_key == key:
@@ -422,7 +434,7 @@ class MonitorView:
         for color, name in zip(POWER_COLORS, ("CPU", "GPU", "NPU", tr("Other")), strict=True):
             t = C.meta(f"{name} –")
             self.legend_texts.append(t)
-            legend.append(ft.Row([C.dot(color, T.px(8)), t], spacing=T.px(6), tight=True))
+            legend.append(ft.Row([C.dot(color, 8), t], spacing=T.px(6), tight=True))
         self.power_legend.controls = legend
         self.net.controls, self.net_texts = [], {}
         # through the event loop like the ticks: sent directly from this (connect) thread, the patch adding these
@@ -437,8 +449,8 @@ class MonitorView:
         return self.push
 
     # ---------------------------------------------------------------- samples
-    def _on_sample(self, gen: int, s: dict) -> None:
-        if gen != self._gen or self.root is None:
+    def _on_sample(self, s: dict) -> None:
+        if self.stopped or self.root is None:
             return
         self.last_sample = s
         for name, value in M.series_of(s).items():
@@ -448,8 +460,8 @@ class MonitorView:
             self.procs = s.get("procs") or []
             changed.append(self._bind_rows(update=False))
         cpu_share = (s.get("self_ms") or 0) / 10 / max(1.0, s.get("dt") or 1.0) / max(1, self.static.get("cores", 1))
-        self.overhead.value = tr("Monitor is using {pct} % of the Frame's CPU").format(pct=f"{cpu_share:.2f}")
-        self.overhead.tooltip = tr("The time the Frame spends collecting these numbers")
+        self.overhead.value = tr("Monitor is using {pct}% of the Frame's CPU").format(pct=f"{cpu_share:.2f}")
+        self.overhead.tooltip = tr("The time the Frame spends collecting these numbers.")
         self._updater()(self.overhead, *[c for group in changed for c in group])
 
     def _apply_tiles(self, s: dict) -> list:
@@ -470,7 +482,7 @@ class MonitorView:
         if swap > 64 * 1024 ** 2:
             sub += " · " + tr("swap {n}").format(n=M.fmt_bytes(swap))
         if psi:
-            sub += " · " + tr("waiting {pct} %").format(pct=f"{psi:.0f}")
+            sub += " · " + tr("waiting {pct}%").format(pct=f"{psi:.0f}")
         lvl = max((M.level("mem", 100.0 * used / total if total else None), M.level("psi_memory", psi)),
                   key=("ok", "warn", "error").index)
         self.t_mem.set(M.fmt_pct(100.0 * used / total if total else None), sub, h.get("mem"), lvl)
@@ -509,7 +521,7 @@ class MonitorView:
         game = games[0] if games else None
         was = self.game_card.visible
         self.game_card.visible = game is not None
-        self.no_game.visible = game is None and (self.filter.selected or ["game"])[0] == "game"
+        self.no_game.visible = game is None and self.filter.data == "game"
         if game is None:
             if self.game_pkg is not None:
                 self.game_pkg = None
@@ -536,7 +548,23 @@ class MonitorView:
         lvl = M.level("fps_ratio", ratio)
         self.game_fps.value = f"{fps:.0f}" if fps is not None else "–"
         self.game_fps.color = LEVEL_COLOR[lvl] if fps is not None else T.TEXT_3
-        if game.get("kind") in ("pcvr", "linux"):
+        mood = easter.fps_mood(fps, target) if easter.enabled() else None  # (rest the pointer on the number)
+        if mood != getattr(self, "_fps_mood", None):
+            self._fps_mood = mood
+            # above the number, clear of the pointer resting on it
+            self.game_fps.tooltip = ft.Tooltip(message=mood, wait_duration=1200, prefer_below=False,
+                                               vertical_offset=T.px(34)) if mood else None
+        # easter egg: 2.5 minutes right on target = a moment's celebration in the portal's colours (once per streak),
+        # then the "Perfect pacing" pill and line stay until the frame rate slips
+        if easter.enabled() and self._perfect.feed(fps, target, s.get("t") or time.time()):
+            self._perfect_until = time.monotonic() + easter.PERFECT_SHOW
+        steady = easter.enabled() and self._perfect.done
+        party = steady and time.monotonic() < self._perfect_until
+        self.game_spark.portal(party)
+        self._show_perfect(party, steady)
+        if steady:
+            self.game_fps_sub.value = tr("fps · perfect pacing")
+        elif game.get("kind") in ("pcvr", "linux"):
             self.game_fps_sub.value = tr("fps isn't reported for PC VR and Linux games")
         elif fps is None:
             self.game_fps_sub.value = tr("fps: waiting for the game's first frames")
@@ -548,6 +576,27 @@ class MonitorView:
         self.game_spark.set(series, target=target, hi=(target or 72) * 1.15)
         return [self.game_card, self.no_game]
 
+    def _show_perfect(self, on: bool, steady: bool) -> None:
+        """Perfect pacing (an easter egg). on: the celebration (the card glows and pulses between the portal's blue
+        and orange, the number grows and takes the portal gradient); steady: the "Perfect pacing" pill, which stays
+        after the celebration until the frame rate slips."""
+        card, fps = self.game_card, self.game_fps
+        self.perfect_pill.visible = steady
+        if on:
+            self._perfect_beat = not self._perfect_beat
+            color = T.SECONDARY if self._perfect_beat else T.ACCENT
+            card.border = ft.Border.all(T.px(2), color)
+            card.shadow = ft.BoxShadow(blur_radius=T.px(34), spread_radius=T.px(3), color=T.soft(color, 0.55))
+            card.bgcolor = T.SURFACE
+            fps.scale = 1.22
+            fps.color = None
+            fps.style = ft.TextStyle(foreground=ft.Paint(gradient=ft.PaintLinearGradient(
+                begin=ft.Offset(0, 0), end=ft.Offset(T.px(52), 0), colors=[T.SECONDARY, T.ACCENT])))
+        elif self._perfect_on:
+            card.border, card.shadow, card.bgcolor = self._card_look
+            fps.scale, fps.style = 1.0, None
+        self._perfect_on = on
+
     def _apply_details(self, s: dict) -> list:
         if not self.details.visible:
             return []
@@ -555,7 +604,7 @@ class MonitorView:
         cores = (s.get("cpu") or {}).get("cores") or []
         for (bar, val), pct in zip(self.core_bars, cores, strict=False):
             bar.set([pct / 100.0])
-            val.value = f"{pct:.0f} %"
+            val.value = f"{pct:.0f}%"
             out += [bar.control, val]
         temps = s.get("temps") or {}
         zones = s.get("zones")
@@ -597,7 +646,7 @@ class MonitorView:
             row.bind(p)
         total = len(self.procs)
         if len(rows) > ROWS:
-            self.proc_note.value = tr("Showing the top {shown} of {n} rows: search to find others.").format(
+            self.proc_note.value = tr("Showing {shown} of {n}. Search to find others.").format(
                 shown=ROWS, n=len(rows))
         elif self.search.value and not procs:
             self.proc_note.value = tr("No process matches.")
@@ -620,35 +669,13 @@ class MonitorView:
     def open_menu(self, p: dict | None, position=None) -> None:
         if not p:
             return
+        from ..menus import process_menu
+
         name, pid = p.get("name", "?"), p.get("pid")
-        actions: list = []
-        if p.get("kind") == "group":
-            n = p["count"]
-            actions.append((tr("Hide its processes") if p.get("expanded") else tr("Show its processes"),
-                            ft.Icons.UNFOLD_MORE_ROUNDED, lambda e: self.toggle_group(p)))
-            if not p.get("locked"):
-                actions += [None, (tr("End all {n}").format(n=n), ft.Icons.CLOSE_ROUNDED,
-                                   lambda e: self.ask_kill(p, "TERM")),
-                            (tr("Force kill all {n}").format(n=n), ft.Icons.DANGEROUS_OUTLINED,
-                             lambda e: self.ask_kill(p, "KILL"))]
-            if p.get("game"):
-                actions += [None, (tr("End the whole game"), ft.Icons.STOP_CIRCLE_OUTLINED,
-                                   lambda e: self.ask_end_game(p["game"]))]
-            actions += [None, (tr("Copy name"), ft.Icons.CONTENT_COPY_ROUNDED, lambda e: self.app.copy(name))]
-            self.menu.items = C.menu_items(actions)
-            C.update(self.menu)
-            self.app.page.run_task(self.menu.open, global_position=position)
-            return
-        if not p.get("locked"):
-            actions += [(tr("End process"), ft.Icons.CLOSE_ROUNDED, lambda e: self.ask_kill(p, "TERM")),
-                        (tr("Force kill"), ft.Icons.DANGEROUS_OUTLINED, lambda e: self.ask_kill(p, "KILL"))]
-        if p.get("game"):
-            actions += [None, (tr("End the whole game"), ft.Icons.STOP_CIRCLE_OUTLINED,
-                               lambda e: self.ask_end_game(p["game"]))]
-        actions += [None, (tr("Copy PID {pid}").format(pid=pid), ft.Icons.CONTENT_COPY_ROUNDED,
-                           lambda e: self.app.copy(str(pid))),
-                    (tr("Copy name"), ft.Icons.CONTENT_COPY_ROUNDED, lambda e: self.app.copy(name))]
-        self.menu.items = C.menu_items(actions)
+        handlers = {"toggle": lambda e: self.toggle_group(p), "copy_name": lambda e: self.app.copy(name),
+                    "copy_pid": lambda e: self.app.copy(str(pid)), "term": lambda e: self.ask_kill(p, "TERM"),
+                    "kill": lambda e: self.ask_kill(p, "KILL"), "end_game": lambda e: self.ask_end_game(p["game"])}
+        self.menu.items = C.menu_items(process_menu(p, handlers.__getitem__))
         C.update(self.menu)
         self.app.page.run_task(self.menu.open, global_position=position)
 
@@ -656,34 +683,33 @@ class MonitorView:
         name, pid = p.get("name", "?"), p.get("pid")
         if p.get("kind") == "group":
             n = p["count"]
-            heading = (tr("Force kill all {n} {name}?") if sig == "KILL" else tr("End all {n} {name}?")).format(
+            heading = (tr("Force quit all {n} {name}?") if sig == "KILL" else tr("End all {n} {name}?")).format(
                 n=n, name=name)
             text = tr("{n} processes named {name} with the same parent are ended.").format(n=n, name=name)
             if p.get("critical"):
-                text += " " + tr("They are part of Steam, SteamVR or the desktop: the headset view or Steam may "
-                                 "restart, and anything running in the headset may stop.")
-            C.confirm(self.app.page, heading, text, tr("Force kill all") if sig == "KILL" else tr("End all"),
+                text += " " + tr("They're part of SteamOS. Ending them may restart Steam and stop the running game.")
+            C.confirm(self.app.page, heading, text, tr("Force quit all") if sig == "KILL" else tr("End all"),
                       lambda: self.app.run_bg(self._kill, p, sig), danger=True)
             return
         if p.get("critical"):
             heading = tr("End {name}?").format(name=name)
-            text = tr("{name} is part of Steam, SteamVR or the desktop. Ending it can close the headset view or "
-                      "restart Steam, and anything running in the headset may stop.").format(name=name)
+            text = tr("{name} is part of SteamOS. Ending it may restart Steam and stop the running game.").format(
+                name=name)
         elif sig == "KILL":
-            heading = tr("Force kill {name}?").format(name=name)
+            heading = tr("Force quit {name}?").format(name=name)
             text = tr("{name} (PID {pid}) stops at once without saving anything.").format(name=name, pid=pid)
         else:
             heading = tr("End {name}?").format(name=name)
             text = tr("{name} (PID {pid}) is asked to close.").format(name=name, pid=pid)
             if p.get("game"):
                 text += " " + tr("It belongs to a running game, which may stop with it.")
-        label = tr("Force kill") if sig == "KILL" else tr("End process")
+        label = tr("Force quit") if sig == "KILL" else tr("End process")
         C.confirm(self.app.page, heading, text, label, lambda: self.app.run_bg(self._kill, p, sig),
                   danger=sig == "KILL" or bool(p.get("critical")))
 
     def _kill(self, p: dict, sig: str) -> None:
-        session = self.session
-        if session is None:
+        session = self.hub
+        if session.session is None:
             self.app.toast(tr("The monitor isn't connected."), error=True)
             return
         name = p.get("name", "?")
@@ -697,7 +723,7 @@ class MonitorView:
                     left.append(m["pid"])
             if left:
                 self.app.toast(tr("{n} of the {name} processes are still running.").format(n=len(left), name=name),
-                               action=None if sig == "KILL" else tr("Force kill"),
+                               action=None if sig == "KILL" else tr("Force quit"),
                                on_action=None if sig == "KILL" else lambda e: self.app.run_bg(self._kill, p, "KILL"))
             else:
                 self.app.toast(tr("All {n} {name} processes ended.").format(n=p["count"], name=name))
@@ -712,7 +738,7 @@ class MonitorView:
         if res.get("ended"):
             self.app.toast(tr("{name} ended.").format(name=name))
         else:
-            self.app.toast(tr("{name} is still running.").format(name=name), action=tr("Force kill"),
+            self.app.toast(tr("{name} is still running.").format(name=name), action=tr("Force quit"),
                            on_action=lambda e: self.app.run_bg(self._kill, p, "KILL"))
 
     def ask_end_game(self, pkg: str | None = None) -> None:
@@ -721,13 +747,12 @@ class MonitorView:
             return
         title = next((g.get("title") for g in self.last_games if g.get("package") == pkg), None) or pkg
         C.confirm(self.app.page, tr("End {title}?").format(title=title),
-                  tr("The game is closed the way Steam's Exit game does it; if it doesn't stop, FramePort stops it. "
-                     "Progress that the game hasn't saved is lost."),
+                  tr("Closes the game like Steam's Exit game. Unsaved progress is lost."),
                   tr("End game"), lambda: self.app.run_bg(self._end_game, pkg, title), danger=True)
 
     def _end_game(self, pkg: str, title: str) -> None:
-        session = self.session
-        if session is None:
+        session = self.hub
+        if session.session is None:
             self.app.toast(tr("The monitor isn't connected."), error=True)
             return
         self.end_btn.disabled = True

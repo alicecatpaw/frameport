@@ -402,6 +402,11 @@ XRAPI_ATTR XrResult XRAPI_CALL xrEnumerateViewConfigurationViews(XrInstance inst
         (PFN_xrEnumerateViewConfigurationViews)lookup(instance, "xrEnumerateViewConfigurationViews");
     if (!fn) return XR_ERROR_FUNCTION_UNSUPPORTED;
     XrResult result = fn(instance, system, type, capacity, count, views);
+    static int runtime_logged;
+    if (XR_SUCCEEDED(result) && views && count && *count && capacity && !runtime_logged++)
+        // the runtime's own size, before scale (FramePort's agent reads it to keep games' saved resolutions in step)
+        LOG("runtime recommended eye size %ux%u (max %ux%u, scale %.2f)", views[0].recommendedImageRectWidth,
+            views[0].recommendedImageRectHeight, views[0].maxImageRectWidth, views[0].maxImageRectHeight, scale);
     if (XR_SUCCEEDED(result) && views && count && scale != 1.0f) {
         for (uint32_t i = 0; i < *count && i < capacity; ++i) {
             uint32_t w = (uint32_t)(views[i].recommendedImageRectWidth * scale + 0.5f);

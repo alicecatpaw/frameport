@@ -12,6 +12,12 @@
 #include <string.h>
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "GLShim", __VA_ARGS__)
+#define EXPORT __attribute__((visibility("default")))
+#ifndef GLSHIM_GLES_LIB  // (the host test points these at a stand-in GL library)
+#define GLSHIM_GLES_LIB "libGLESv3.so"
+#define GLSHIM_EGL_LIB "libEGL.so"
+#endif
+#include "glfix.h"
 
 static const char *const hidden_multiview[] = {
     "GL_OVR_multiview", "GL_OVR_multiview2", "GL_OVR_multiview_multisampled_render_to_texture",
@@ -37,14 +43,25 @@ static int hide_msrtt = 1;
 // with the MSRTT extensions switched Unreal's multiview off, so for Unreal it stays visible and its function draws
 // single-sampled (glFramebufferTextureMultiviewOVR), like the EXT stand-ins below.
 static int unreal;
+// Per-game fixes (off unless a recipe sets them; see glfix.h): integer vertex attributes fed as floats are rebound as
+// integers before each draw (gl_int_attribs), and vertex shaders containing every marker get highp calculations
+// (gl_highp_markers).
+static int int_attribs;
+static char highp_markers[512];
+static void forget_program(GLuint prog);
 
 static void read_conf_file(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return;
-    char line[256];
+    char line[1024];
     while (fgets(line, sizeof(line), f)) {
         if (!strncmp(line, "gl_hide_multiview=", 18)) hide_multiview = atoi(line + 18);
         if (!strncmp(line, "gl_hide_msrtt=", 14)) hide_msrtt = atoi(line + 14);
+        if (!strncmp(line, "gl_int_attribs=", 15)) int_attribs = atoi(line + 15);
+        if (!strncmp(line, "gl_highp_markers=", 17)) {
+            snprintf(highp_markers, sizeof(highp_markers), "%s", line + 17);
+            highp_markers[strcspn(highp_markers, "\r\n")] = 0;
+        }
     }
     fclose(f);
 }
@@ -213,6 +230,7 @@ static void w_compile(GLuint sh) {
 }
 static void w_link(GLuint prog) {
     r_link(prog);
+    forget_program(prog);
     GLint ok = 1;
     r_getProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok && shader_logs < 40) {
@@ -261,6 +279,231 @@ static void w_blit(GLint a, GLint b, GLint c, GLint d, GLint e, GLint f, GLint g
         r_getIv(GL_READ_FRAMEBUFFER_BINDING, &rfb);
         LOG("glBlitFramebuffer read=%d draw=%u src %d,%d-%d,%d dst %d,%d-%d,%d mask=0x%x err=0x%x", rfb, cur_draw_fb, a, b, c, d, e, f, g, h, m, r_getError());
     }
+}
+
+// ---- per-game fixes: the real functions (from libGLESv3 / libEGL, whatever the game imports or looks up)
+static struct {
+    void (*ShaderSource)(GLuint, GLsizei, const GLchar *const *, const GLint *);
+    void (*GetShaderiv)(GLuint, GLenum, GLint *);
+    void (*LinkProgram)(GLuint);
+    void (*ProgramBinary)(GLuint, GLenum, const void *, GLsizei);
+    void (*DeleteProgram)(GLuint);
+    void (*GetProgramiv)(GLuint, GLenum, GLint *);
+    void (*GetActiveAttrib)(GLuint, GLuint, GLsizei, GLsizei *, GLint *, GLenum *, GLchar *);
+    GLint (*GetAttribLocation)(GLuint, const GLchar *);
+    void (*GetVertexAttribiv)(GLuint, GLenum, GLint *);
+    void (*GetVertexAttribPointerv)(GLuint, GLenum, void **);
+    void (*VertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void *);
+    void (*VertexAttribIPointer)(GLuint, GLint, GLenum, GLsizei, const void *);
+    void (*VertexAttribI4i)(GLuint, GLint, GLint, GLint, GLint);
+    void (*VertexAttribI4ui)(GLuint, GLuint, GLuint, GLuint, GLuint);
+    void (*BindBuffer)(GLenum, GLuint);
+    void (*DrawArrays)(GLenum, GLint, GLsizei);
+    void (*DrawElements)(GLenum, GLsizei, GLenum, const void *);
+    void (*DrawArraysInstanced)(GLenum, GLint, GLsizei, GLsizei);
+    void (*DrawElementsInstanced)(GLenum, GLsizei, GLenum, const void *, GLsizei);
+    void (*DrawRangeElements)(GLenum, GLuint, GLuint, GLsizei, GLenum, const void *);
+    EGLContext (*GetCurrentContext)(void);
+} d;
+
+// gl_highp_markers: a copy of a matching vertex shader's source with highp calculations, else NULL
+static int highp_logs;
+static char *precision_fix(GLuint sh, const char *src) {
+    if (!highp_markers[0] || !glfix_markers_match(src, highp_markers)) return NULL;
+    GLint type = 0;
+    if (d.GetShaderiv) d.GetShaderiv(sh, GL_SHADER_TYPE, &type);
+    if (type != GL_VERTEX_SHADER) return NULL;
+    int n = 0;
+    char *out = glfix_promote_highp(src, &n);
+    if (out && highp_logs < 16) { ++highp_logs; LOG("highp: vertex shader %u: %d mediump -> highp", sh, n); }
+    return out;
+}
+
+static char *concat_sources(GLsizei count, const GLchar *const *strs, const GLint *lens) {
+    size_t total = 0;
+    for (GLsizei i = 0; i < count; ++i) total += lens && lens[i] >= 0 ? (size_t)lens[i] : strlen(strs[i]);
+    char *src = malloc(total + 1);
+    if (!src) return NULL;
+    size_t off = 0;
+    for (GLsizei i = 0; i < count; ++i) {
+        size_t n = lens && lens[i] >= 0 ? (size_t)lens[i] : strlen(strs[i]);
+        memcpy(src + off, strs[i], n);
+        off += n;
+    }
+    src[off] = 0;
+    return src;
+}
+
+// gl_int_attribs: the shader declares an integer input (int/uint/ivecN/uvecN), the game set its array with
+// glVertexAttribPointer (floats; GL_VERTEX_ATTRIB_ARRAY_INTEGER 0). Qualcomm's Quest driver read the raw integers
+// anyway; Mesa (Zink) converts them to floats, so e.g. BlazeRush's bone indices were garbage and its car bodies and
+// controller models invisible (Klownicle's guide, GitHub #57). Before each draw, such an array is set again with
+// glVertexAttribIPointer (same buffer, size, component type, stride and offset; the game's GL_ARRAY_BUFFER binding is
+// restored), and set back to floats (with the game's normalization) when a program with a float input at that
+// location draws from the same vertex array state. A disabled integer input gets the integer default (0, 0, 0, 1).
+// The active-attribute reflection is cached per EGL context and program, and dropped when a program is linked,
+// loaded from a binary or deleted (program names are reused).
+#define MAXLOC 32
+#define NPROG 1024
+#define PROBE 16
+#define NCONV 256
+#define NCTX 16
+struct proginfo { EGLContext ctx; GLuint prog; uint32_t int_mask, unsigned_mask, float_mask; };
+struct convrec { EGLContext ctx; GLuint vao, buffer; int loc, used; GLint size, stride; GLenum type; const void *ptr;
+                 GLboolean normalized; };
+struct ctxstate { EGLContext ctx; uint32_t converted; };
+static struct proginfo progs[NPROG];
+static struct convrec convs[NCONV];
+static struct ctxstate ctxs[NCTX];
+static unsigned conv_next, ctx_next;
+static pthread_mutex_t attrib_lock = PTHREAD_MUTEX_INITIALIZER;
+static int attrib_logs, reflect_logs, skip_logs;
+
+static unsigned prog_slot(EGLContext ctx, GLuint prog) {
+    uint64_t h = (uint64_t)(uintptr_t)ctx * 0x9E3779B97F4A7C15ull ^ (uint64_t)prog * 0x85EBCA6Bu;
+    return (unsigned)((h ^ (h >> 29)) % NPROG);
+}
+
+static void forget_program(GLuint prog) {  // every context's entry: shared contexts see the same program name
+    if (!prog || !int_attribs) return;
+    pthread_mutex_lock(&attrib_lock);
+    for (unsigned i = 0; i < NPROG; ++i)
+        if (progs[i].prog == prog) progs[i] = (struct proginfo){0};
+    pthread_mutex_unlock(&attrib_lock);
+}
+
+static void reflect(struct proginfo *pi, GLuint prog) {
+    GLint linked = 0, n = 0;
+    d.GetProgramiv(prog, GL_LINK_STATUS, &linked);
+    if (!linked) return;
+    d.GetProgramiv(prog, GL_ACTIVE_ATTRIBUTES, &n);
+    for (GLint i = 0; i < n; ++i) {
+        char name[128] = {0};
+        GLsizei len = 0;
+        GLint size = 0;
+        GLenum type = 0;
+        d.GetActiveAttrib(prog, (GLuint)i, sizeof(name), &len, &size, &type, name);
+        GLint loc = name[0] ? d.GetAttribLocation(prog, name) : -1;
+        if (loc < 0) continue;  // built-ins (gl_VertexID ...)
+        int kind = glfix_int_attrib_kind(type), cols = glfix_attrib_columns(type);
+        for (int k = 0; k < (size > 0 ? size : 1) * cols && loc + k < MAXLOC; ++k) {
+            uint32_t bit = 1u << (loc + k);
+            if (kind) pi->int_mask |= bit; else pi->float_mask |= bit;
+            if (kind == 2) pi->unsigned_mask |= bit;
+        }
+        if (kind && reflect_logs < 16) {
+            ++reflect_logs;
+            LOG("int attribs: program %u has integer input %s (%s) at location %d", prog, name,
+                kind == 2 ? "unsigned" : "signed", loc);
+        }
+    }
+}
+
+static struct proginfo *program_info(EGLContext ctx, GLuint prog) {
+    unsigned h = prog_slot(ctx, prog), free_slot = NPROG;
+    for (unsigned k = 0; k < PROBE; ++k) {
+        struct proginfo *e = &progs[(h + k) % NPROG];
+        if (e->prog == prog && e->ctx == ctx) return e;
+        if (!e->prog && free_slot == NPROG) free_slot = (h + k) % NPROG;
+    }
+    struct proginfo *e = &progs[free_slot < NPROG ? free_slot : h];
+    *e = (struct proginfo){.ctx = ctx, .prog = prog};
+    reflect(e, prog);
+    return e;
+}
+
+static struct ctxstate *ctx_state(EGLContext ctx) {
+    for (unsigned i = 0; i < NCTX; ++i)
+        if (ctxs[i].ctx == ctx) return &ctxs[i];
+    struct ctxstate *c = &ctxs[ctx_next++ % NCTX];
+    *c = (struct ctxstate){.ctx = ctx};
+    return c;
+}
+
+static struct convrec *find_conv(EGLContext ctx, GLuint vao, int loc) {
+    for (unsigned i = 0; i < NCONV; ++i)
+        if (convs[i].used && convs[i].ctx == ctx && convs[i].vao == vao && convs[i].loc == loc) return &convs[i];
+    return NULL;
+}
+
+static void rebind(GLuint loc, GLuint buffer, GLint size, GLenum type, GLboolean normalized, GLsizei stride,
+                   const void *ptr, int integer) {
+    GLint previous = 0;
+    real_glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previous);
+    d.BindBuffer(GL_ARRAY_BUFFER, buffer);
+    if (integer) d.VertexAttribIPointer(loc, size, type, stride, ptr);
+    else d.VertexAttribPointer(loc, size, type, normalized, stride, ptr);
+    d.BindBuffer(GL_ARRAY_BUFFER, (GLuint)previous);
+}
+
+static void fix_attribs(void) {
+    if (!int_attribs || !real_glGetIntegerv || !d.GetVertexAttribiv || !d.GetVertexAttribPointerv || !d.BindBuffer ||
+        !d.VertexAttribIPointer || !d.VertexAttribPointer || !d.GetProgramiv || !d.GetActiveAttrib ||
+        !d.GetAttribLocation)
+        return;
+    GLint prog = 0;
+    real_glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+    if (prog <= 0) return;
+    EGLContext ctx = d.GetCurrentContext ? d.GetCurrentContext() : NULL;
+    pthread_mutex_lock(&attrib_lock);
+    struct proginfo *pi = program_info(ctx, (GLuint)prog);
+    struct ctxstate *cs = ctx_state(ctx);
+    uint32_t check = pi->int_mask | (pi->float_mask & cs->converted);
+    if (!check) { pthread_mutex_unlock(&attrib_lock); return; }
+    GLint vao = 0;
+    real_glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+    for (int loc = 0; loc < MAXLOC; ++loc) {
+        uint32_t bit = 1u << loc;
+        if (!(check & bit)) continue;
+        int want_int = (pi->int_mask & bit) != 0;
+        GLint enabled = 0, integer = 0;
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled);
+        if (!enabled) {
+            if (want_int && (pi->unsigned_mask & bit) && d.VertexAttribI4ui) d.VertexAttribI4ui((GLuint)loc, 0, 0, 0, 1);
+            else if (want_int && d.VertexAttribI4i) d.VertexAttribI4i((GLuint)loc, 0, 0, 0, 1);
+            continue;
+        }
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_INTEGER, &integer);
+        if (want_int == (integer != 0)) continue;
+        GLint buffer = 0, size = 0, type = 0, stride = 0, normalized = 0;
+        void *ptr = NULL;
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+        d.GetVertexAttribiv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &normalized);
+        d.GetVertexAttribPointerv((GLuint)loc, GL_VERTEX_ATTRIB_ARRAY_POINTER, &ptr);
+        if (vao && !buffer) continue;  // client-side arrays only exist on the default vertex array
+        if (want_int) {
+            if (!glfix_int_component_type((unsigned)type)) {
+                if (skip_logs < 8) {
+                    ++skip_logs;
+                    LOG("int attribs: program %d location %d has data of type 0x%x, left as it is", prog, loc, type);
+                }
+                continue;
+            }
+            rebind((GLuint)loc, (GLuint)buffer, size, (GLenum)type, (GLboolean)normalized, stride, ptr, 1);
+            struct convrec *r = find_conv(ctx, (GLuint)vao, loc);
+            if (!r) r = &convs[conv_next++ % NCONV];
+            *r = (struct convrec){ctx, (GLuint)vao, (GLuint)buffer, loc, 1, size, stride, (GLenum)type, ptr,
+                                  (GLboolean)normalized};
+            cs->converted |= bit;
+            if (attrib_logs < 24) {
+                ++attrib_logs;
+                LOG("int attribs: program %d location %d: floats -> glVertexAttribIPointer (vao %d buffer %d size %d "
+                    "type 0x%x stride %d offset %p)", prog, loc, vao, buffer, size, type, stride, ptr);
+            }
+        } else {
+            struct convrec *r = find_conv(ctx, (GLuint)vao, loc);
+            if (!r || r->buffer != (GLuint)buffer || r->size != size || r->type != (GLenum)type || r->stride != stride ||
+                r->ptr != ptr)
+                continue;  // the game set it up as integers itself
+            rebind((GLuint)loc, (GLuint)buffer, size, (GLenum)type, r->normalized, stride, ptr, 0);
+            r->used = 0;
+            if (attrib_logs < 24) { ++attrib_logs; LOG("int attribs: program %d location %d: back to floats", prog, loc); }
+        }
+    }
+    pthread_mutex_unlock(&attrib_lock);
 }
 
 // Mesa's GLSL preprocessor rejects "#extension" after "#pragma" lines ("not allowed in the middle of a shader");
@@ -323,6 +566,8 @@ static void w_shaderSource(GLuint sh, GLsizei count, const GLchar *const *strs, 
             }
         }
     }
+    char *highp = precision_fix(sh, src);
+    if (highp) { free(src); src = highp; }
     const GLchar *one = src;
     r_shaderSourceSet(sh, 1, &one, NULL);
     free(src);
@@ -334,12 +579,24 @@ __attribute__((constructor)) static void shim_ctor(void) {
 
 static void init(void) {
     read_conf();
-    gles = dlopen("libGLESv3.so", RTLD_NOW | RTLD_LOCAL);
-    void *egl = dlopen("libEGL.so", RTLD_NOW | RTLD_LOCAL);
+    gles = dlopen(GLSHIM_GLES_LIB, RTLD_NOW | RTLD_LOCAL);
+    void *egl = dlopen(GLSHIM_EGL_LIB, RTLD_NOW | RTLD_LOCAL);
     real_glGetString = gles ? dlsym(gles, "glGetString") : NULL;
     real_glGetStringi = gles ? dlsym(gles, "glGetStringi") : NULL;
     real_glGetIntegerv = gles ? dlsym(gles, "glGetIntegerv") : NULL;
     real_eglGetProcAddress = egl ? dlsym(egl, "eglGetProcAddress") : NULL;
+#define REAL(field, sym) d.field = gles ? dlsym(gles, sym) : NULL;
+    REAL(ShaderSource, "glShaderSource") REAL(GetShaderiv, "glGetShaderiv") REAL(LinkProgram, "glLinkProgram")
+    REAL(ProgramBinary, "glProgramBinary") REAL(DeleteProgram, "glDeleteProgram") REAL(GetProgramiv, "glGetProgramiv")
+    REAL(GetActiveAttrib, "glGetActiveAttrib") REAL(GetAttribLocation, "glGetAttribLocation")
+    REAL(GetVertexAttribiv, "glGetVertexAttribiv") REAL(GetVertexAttribPointerv, "glGetVertexAttribPointerv")
+    REAL(VertexAttribPointer, "glVertexAttribPointer") REAL(VertexAttribIPointer, "glVertexAttribIPointer")
+    REAL(VertexAttribI4i, "glVertexAttribI4i") REAL(VertexAttribI4ui, "glVertexAttribI4ui")
+    REAL(BindBuffer, "glBindBuffer") REAL(DrawArrays, "glDrawArrays") REAL(DrawElements, "glDrawElements")
+    REAL(DrawArraysInstanced, "glDrawArraysInstanced") REAL(DrawElementsInstanced, "glDrawElementsInstanced")
+    REAL(DrawRangeElements, "glDrawRangeElements")
+#undef REAL
+    d.GetCurrentContext = egl ? dlsym(egl, "eglGetCurrentContext") : NULL;
     static const char *const engines[] = {"libunity.so", "libUE4.so", "libUnreal.so"};
     int engine_found = 0;
     for (unsigned i = 0; i < sizeof engines / sizeof *engines && !engine_found; i++) {
@@ -355,6 +612,9 @@ static void init(void) {
     unreal = unreal && hide_msrtt && !hide_multiview;  // only matters while MSRTT is hidden and multiview kept
     LOG("GL shim active: hide_multiview=%d hide_msrtt=%d%s", hide_multiview, hide_msrtt,
         unreal ? " (Unreal: multiview MSRTT kept, drawn single-sampled)" : "");
+    if (int_attribs || highp_markers[0])
+        LOG("GL shim per-game fixes: gl_int_attribs=%d gl_highp_markers=%s", int_attribs,
+            highp_markers[0] ? highp_markers : "(none)");
 }
 
 static int is_hidden(const char *name) {
@@ -440,6 +700,100 @@ static void plain_ftmsmv(GLenum target, GLenum attachment, GLuint texture, GLint
     if (r_plain_ftmv) r_plain_ftmv(target, attachment, texture, level, base, views);
 }
 
+// gl_int_attribs: draws looked up through eglGetProcAddress (wrapped only when the setting is on)
+typedef void (*PFN_PB)(GLuint, GLenum, const void *, GLsizei);
+typedef void (*PFN_DEBV)(GLenum, GLsizei, GLenum, const void *, GLint);
+typedef void (*PFN_DREBV)(GLenum, GLuint, GLuint, GLsizei, GLenum, const void *, GLint);
+typedef void (*PFN_DEIBV)(GLenum, GLsizei, GLenum, const void *, GLsizei, GLint);
+static PFN_PB e_pb, e_pboes;
+static PFN_V_U e_dp;
+static PFN_DA e_da;
+static PFN_DE e_de;
+static PFN_DAI e_dai;
+static PFN_DEI e_dei;
+static PFN_DRE e_dre;
+static PFN_DEBV e_debv0, e_debv1, e_debv2;
+static PFN_DREBV e_drebv0, e_drebv1, e_drebv2;
+static PFN_DEIBV e_deibv0, e_deibv1, e_deibv2;
+static void x_pb(GLuint p, GLenum f, const void *b, GLsizei n) { e_pb(p, f, b, n); forget_program(p); }
+static void x_pboes(GLuint p, GLenum f, const void *b, GLsizei n) { e_pboes(p, f, b, n); forget_program(p); }
+static void x_dp(GLuint p) { e_dp(p); forget_program(p); }
+static void x_da(GLenum m, GLint f, GLsizei c) { fix_attribs(); e_da(m, f, c); }
+static void x_de(GLenum m, GLsizei c, GLenum t, const void *i) { fix_attribs(); e_de(m, c, t, i); }
+static void x_dai(GLenum m, GLint f, GLsizei c, GLsizei n) { fix_attribs(); e_dai(m, f, c, n); }
+static void x_dei(GLenum m, GLsizei c, GLenum t, const void *i, GLsizei n) { fix_attribs(); e_dei(m, c, t, i, n); }
+static void x_dre(GLenum m, GLuint s, GLuint e, GLsizei c, GLenum t, const void *i) {
+    fix_attribs();
+    e_dre(m, s, e, c, t, i);
+}
+#define BV(n) \
+    static void x_debv##n(GLenum m, GLsizei c, GLenum t, const void *i, GLint b) { fix_attribs(); e_debv##n(m, c, t, i, b); } \
+    static void x_drebv##n(GLenum m, GLuint s, GLuint e, GLsizei c, GLenum t, const void *i, GLint b) { \
+        fix_attribs(); e_drebv##n(m, s, e, c, t, i, b); } \
+    static void x_deibv##n(GLenum m, GLsizei c, GLenum t, const void *i, GLsizei k, GLint b) { \
+        fix_attribs(); e_deibv##n(m, c, t, i, k, b); }
+BV(0) BV(1) BV(2)
+#undef BV
+
+// Direct imports of a game library that loads the shim first (DT_NEEDED): these come before libGLESv3's. Plain
+// pass-through unless a per-game fix is on.
+EXPORT void glShaderSource(GLuint sh, GLsizei count, const GLchar *const *strs, const GLint *lens) {
+    pthread_once(&once, init);
+    if (!d.ShaderSource) return;
+    if (highp_markers[0] && count > 0 && strs) {
+        char *src = concat_sources(count, strs, lens);
+        char *highp = src ? precision_fix(sh, src) : NULL;
+        free(src);
+        if (highp) {
+            const GLchar *one = highp;
+            d.ShaderSource(sh, 1, &one, NULL);
+            free(highp);
+            return;
+        }
+    }
+    d.ShaderSource(sh, count, strs, lens);
+}
+EXPORT void glLinkProgram(GLuint p) {
+    pthread_once(&once, init);
+    if (d.LinkProgram) d.LinkProgram(p);
+    forget_program(p);
+}
+EXPORT void glProgramBinary(GLuint p, GLenum f, const void *b, GLsizei n) {
+    pthread_once(&once, init);
+    if (d.ProgramBinary) d.ProgramBinary(p, f, b, n);
+    forget_program(p);
+}
+EXPORT void glDeleteProgram(GLuint p) {
+    pthread_once(&once, init);
+    if (d.DeleteProgram) d.DeleteProgram(p);
+    forget_program(p);
+}
+EXPORT void glDrawArrays(GLenum m, GLint f, GLsizei c) {
+    pthread_once(&once, init);
+    fix_attribs();
+    if (d.DrawArrays) d.DrawArrays(m, f, c);
+}
+EXPORT void glDrawElements(GLenum m, GLsizei c, GLenum t, const void *i) {
+    pthread_once(&once, init);
+    fix_attribs();
+    if (d.DrawElements) d.DrawElements(m, c, t, i);
+}
+EXPORT void glDrawArraysInstanced(GLenum m, GLint f, GLsizei c, GLsizei n) {
+    pthread_once(&once, init);
+    fix_attribs();
+    if (d.DrawArraysInstanced) d.DrawArraysInstanced(m, f, c, n);
+}
+EXPORT void glDrawElementsInstanced(GLenum m, GLsizei c, GLenum t, const void *i, GLsizei n) {
+    pthread_once(&once, init);
+    fix_attribs();
+    if (d.DrawElementsInstanced) d.DrawElementsInstanced(m, c, t, i, n);
+}
+EXPORT void glDrawRangeElements(GLenum m, GLuint s, GLuint e, GLsizei c, GLenum t, const void *i) {
+    pthread_once(&once, init);
+    fix_attribs();
+    if (d.DrawRangeElements) d.DrawRangeElements(m, s, e, c, t, i);
+}
+
 __attribute__((visibility("default"))) __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *name) {
     pthread_once(&once, init);
     if (name && !strcmp(name, "glGetStringi")) return (__eglMustCastToProperFunctionPointerType)glGetStringi;
@@ -477,6 +831,25 @@ __attribute__((visibility("default"))) __eglMustCastToProperFunctionPointerType 
     WRAP("glShaderSource", r_shaderSourceSet, w_shaderSource)
     WRAP("glCompileShader", r_compile, w_compile)
     WRAP("glLinkProgram", r_link, w_link)
+    if (int_attribs) {
+        WRAP("glProgramBinary", e_pb, x_pb)
+        WRAP("glProgramBinaryOES", e_pboes, x_pboes)
+        WRAP("glDeleteProgram", e_dp, x_dp)
+        WRAP("glDrawArrays", e_da, x_da)
+        WRAP("glDrawElements", e_de, x_de)
+        WRAP("glDrawArraysInstanced", e_dai, x_dai)
+        WRAP("glDrawElementsInstanced", e_dei, x_dei)
+        WRAP("glDrawRangeElements", e_dre, x_dre)
+        WRAP("glDrawElementsBaseVertex", e_debv0, x_debv0)
+        WRAP("glDrawElementsBaseVertexEXT", e_debv1, x_debv1)
+        WRAP("glDrawElementsBaseVertexOES", e_debv2, x_debv2)
+        WRAP("glDrawRangeElementsBaseVertex", e_drebv0, x_drebv0)
+        WRAP("glDrawRangeElementsBaseVertexEXT", e_drebv1, x_drebv1)
+        WRAP("glDrawRangeElementsBaseVertexOES", e_drebv2, x_drebv2)
+        WRAP("glDrawElementsInstancedBaseVertex", e_deibv0, x_deibv0)
+        WRAP("glDrawElementsInstancedBaseVertexEXT", e_deibv1, x_deibv1)
+        WRAP("glDrawElementsInstancedBaseVertexOES", e_deibv2, x_deibv2)
+    }
 #ifdef GLSHIM_TRACE
     WRAP("glBindFramebuffer", r_bindFb, w_bindFb)
     WRAP("glFramebufferTexture2D", r_ft2d, w_ft2d)

@@ -108,6 +108,9 @@ def frame_tree(root, home):
     proc(root, 302, "lus4xvrplayerov", 301, cpu=50, fds={3: ("/dev/kgsl-3d0", 5000)},
          cgroup="/user.slice/libpod-abc.scope/container", cmdline=["cn.vr4p.oculus4xvrplayerov"])
     proc(root, 400, "bash", 1, cmdline=["bash", "-c", "sleep 9"])
+    # the agent's shortcut worker during an uninstall names the game's launch.sh: not the game
+    proc(root, 500, "python3", 1, cmdline=["python3", "{agent}", "_shortcuts_worker",
+                                           json.dumps({"remove": [{"exe": f'"{launcher}"'}]})])
     return base
 
 
@@ -119,6 +122,9 @@ def fa(monkeypatch, tmp_path):
     a = load_agent(monkeypatch, home)
     root = tmp_path / "frame"
     frame_tree(root, home)
+    agent_file = next(iter(a.AGENT_FILES))
+    cmd = root / "proc" / "500" / "cmdline"
+    cmd.write_text(cmd.read_text().replace("{agent}", agent_file))
     monkeypatch.setattr(a, "PROC", str(root / "proc"))
     monkeypatch.setattr(a, "SYS", str(root / "sys"))
     monkeypatch.setattr(a, "POWER_SUPPLY", str(root / "power_supply"))
@@ -177,6 +183,7 @@ def test_processes_games_and_filters(fa):
     assert 3 not in names and 2 not in names  # kernel threads
     assert {names[pid]["game"] for pid in (200, 300, 301, 302)} == {GAME}
     assert names[100]["group"] == "steam" and names[101]["group"] == "steamvr" and names[400]["group"] == "other"
+    assert names[500]["game"] is None
     assert names[302]["name"] == "cn.vr4p.oculus4xvrplayerov"  # the full name, not the truncated comm
     assert names[101]["critical"] and names[1]["locked"]
     # default filter: the game's processes + the busiest others as context

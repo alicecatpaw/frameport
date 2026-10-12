@@ -24,12 +24,12 @@ class GlMultiviewFbo(Patch):
     title = "OpenGL ES: multiview shaders on flat panels (HUD, menus)"
     description = (
         "Some OpenGL ES engines compile every shader for multiview (both eyes in one draw, `num_views=2`) and use the "
-        "same shaders to draw into ordinary single-layer framebuffers, e.g. a HUD or PDA screen rendered to a texture. "
-        "Quest's driver draws them anyway; the Frame's driver (Mesa) follows the OVR_multiview rule and silently drops "
-        "every such draw, so those panels stay black (e.g. Doom3Quest's HUD and PDA). Loads OpenGL ES through a small "
-        "interposer (libfpglmv.so) that draws those cases with a single-view copy of the shader program (left-eye "
-        "view; uniforms copied before each such draw). Eye-buffer draws are unchanged. Logs under the tag GLMV; the "
-        "setting gl_mv_debug adds error checks and counters.")
+        "same shaders to draw into ordinary single-layer framebuffers, for example a HUD or PDA screen rendered to a "
+        "texture. Quest's driver draws them anyway; the Frame's driver (Mesa) follows the OVR_multiview rule and "
+        "silently drops every such draw, so those panels stay black (for example Doom3Quest's HUD and PDA). Loads "
+        "OpenGL ES through a small interposer (libfpglmv.so) that draws those cases with a single-view copy of the "
+        "shader program (left-eye view; uniforms copied before each such draw). Eye-buffer draws are unchanged. Logs "
+        "under the tag GLMV; the setting gl_mv_debug adds error checks and counters.")
     order = 63
     experimental = True
 
@@ -40,7 +40,7 @@ class GlMultiviewFbo(Patch):
     def detect(self, a):
         if self.applies(a):
             return Suggestion(False, "Own OpenGL ES engine with multiview shaders: turn on if HUD, menu or other flat "
-                                     "panels stay black on the Frame (e.g. Doom3Quest's HUD and PDA).")
+                                     "panels stay black on the Frame (for example Doom3Quest's HUD and PDA).")
         return None
 
     def apply(self, ctx: ApkContext) -> bool:

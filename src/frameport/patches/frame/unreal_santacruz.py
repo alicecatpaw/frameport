@@ -183,7 +183,7 @@ class _SantaCruzGate(Patch):
 class QuestPrecompileDone(_SantaCruzGate):
     id = "frame.unreal_quest_precompile"
     title = "Unreal: don't wait for the Quest shader precompile"
-    description = ("ILMxLAB's Unreal games (e.g. Vader Immortal) wait on their loading card until "
+    description = ("ILMxLAB's Unreal games (for example Vader Immortal) wait on their loading card until "
                    "UVRUtils::GetQuestShaderPrecompilePercent reaches 100 %. The precompile only starts on a Quest "
                    "(IsRunningOnSantaCruz); on any other device the function returns 0.0, so the loading card (a "
                    "portrait with a progress bar) never ends. Makes that non-Quest branch return 1.0. The Quest "
@@ -193,7 +193,7 @@ class QuestPrecompileDone(_SantaCruzGate):
     note = "GetQuestShaderPrecompilePercent: non-Quest branch returns 1.0"
     check = "Quest shader precompile reported finished"
     reason = ("The menu waits for a Quest-only shader precompile that never starts on the Frame (stuck loading card, "
-              "e.g. Vader Immortal).")
+              "for example Vader Immortal).")
 
     def site(self, data):
         return precompile_site(data)
@@ -202,7 +202,7 @@ class QuestPrecompileDone(_SantaCruzGate):
 class QuestKeyMap(_SantaCruzGate):
     id = "frame.unreal_quest_keymap"
     title = "Unreal: Quest controller bindings (RPOC key map)"
-    description = ("ILMxLAB's Unreal games (e.g. Vader Immortal) bind their controls through URPOCKeyMapManager"
+    description = ("ILMxLAB's Unreal games (for example Vader Immortal) bind their controls through URPOCKeyMapManager"
                    "Component, which for an Oculus headset picks the Quest (\"SantaCruz\") or the Gear VR key set by "
                    "IsRunningOnSantaCruz. On the Frame it picks Gear VR, which is empty in a Quest build: grip, "
                    "trigger and touch reach Unreal but never the game's hands (grabbing does nothing). Removes the "
@@ -213,7 +213,7 @@ class QuestKeyMap(_SantaCruzGate):
     note = "RPOC key map: Oculus headsets get the Quest key set"
     check = "Quest key set selected for Oculus headsets"
     reason = ("The game's key map picks the empty Gear VR controls when the headset isn't a Quest (grip/trigger do "
-              "nothing, e.g. Vader Immortal).")
+              "nothing, for example Vader Immortal).")
 
     def site(self, data):
         return keymap_site(data)

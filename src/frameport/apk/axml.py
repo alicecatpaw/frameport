@@ -21,6 +21,7 @@ TYPE_INT_HEX = 0x11
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
 LAUNCHER = "android.intent.category.LAUNCHER"
 INFO = "android.intent.category.INFO"
+LEANBACK_LAUNCHER = "android.intent.category.LEANBACK_LAUNCHER"  # Android TV's launcher (apps made for a gamepad)
 MAIN = "android.intent.action.MAIN"
 DEFAULT = "android.intent.category.DEFAULT"
 VR_CATEGORY = "com.oculus.intent.category.VR"
@@ -257,6 +258,24 @@ def meta_data(manifest: bytes) -> dict[str, str | int | bool | None]:
                 value = a.value
         out[key] = value
     return out
+
+
+def set_meta_data_bool(manifest: bytes, name_suffix: str, value: bool) -> bytes | None:
+    """Set the boolean android:value of every <meta-data> whose android:name ends with `name_suffix` (one 4-byte
+    value per element, nothing else moves). None when no such boolean entry differs from `value`. A string value
+    ("true") is left alone: Android's Bundle.getBoolean reads only real booleans."""
+    x = Axml(manifest)
+    names = x.strings()
+    hits = 0
+    for el in x.elements():
+        if el.name != "meta-data" or not (x.attr_str(el, "name") or "").endswith(name_suffix):
+            continue
+        for a in el.attrs:
+            if (a.name < len(names) and names[a.name] == "value" and a.dtype == TYPE_INT_BOOLEAN
+                    and (a.value != 0) != value):
+                struct.pack_into("<I", x.data, a.offset + 16, 0xFFFFFFFF if value else 0)
+                hits += 1
+    return x.bytes() if hits else None
 
 
 def categories(manifest: bytes) -> set[str]:

@@ -406,8 +406,12 @@ def unregister(schemes=None) -> dict:
 def apply_setting() -> dict | None:
     """At GUI start: register the enabled schemes (never taking one from another program) and remove FramePort's
     registration of the disabled ones. Errors are logged, never raised (links are a convenience)."""
-    # an isolated data dir (FRAMEPORT_HOME: tests, screenshots) never takes over the user's link handler
-    if os.environ.get("FRAMEPORT_NO_LINK_HANDLER") or os.environ.get("FRAMEPORT_HOME") or not platform_kind():
+    # an isolated data dir (FRAMEPORT_HOME: tests, screenshots) never takes over the user's link handler, nor does a
+    # WSL run on the Windows copy's data (it would point the Windows copy's links at WSL)
+    from .core.paths import shares_windows_data
+
+    if (os.environ.get("FRAMEPORT_NO_LINK_HANDLER") or os.environ.get("FRAMEPORT_HOME") or shares_windows_data()
+            or not platform_kind()):
         return None
     try:
         off = [s for s in SCHEMES if not enabled(s)]

@@ -19,6 +19,7 @@ from ...core.applog import log
 from ...errors import explain
 from ...i18n import tr, tr_n
 from .. import components as C
+from .. import glyphs as G
 from .. import theme as T
 from .files_dialog import human
 
@@ -71,24 +72,31 @@ class ScreenshotsView:
         self.games: list[dict] = []
         self.selected: set[str] = set()  # paths
         self.checks: dict[str, ft.Checkbox] = {}
+        self.tiles: dict[str, tuple] = {}  # path → (tile, quiet checkbox, selection overlay)
+        self.copy_btns: dict[str, ft.Control] = {}  # path → the card's "Copy image" button (shown on hover)
+        self.hot: set[str] = set()  # tiles under the mouse or with keyboard focus
         self._gen = 0
         self._loaded = False
         self._lock = threading.Lock()
-        self.dropdown = ft.Dropdown(label=tr("Game"), value=ALL, width=T.px(300), dense=True,
+        self.dropdown = C.dropdown(label=tr("Game"), value=ALL, width=T.px(300),
                                     options=[ft.DropdownOption(key=ALL, text=tr("All games"))],
                                     on_select=lambda e: self.set_filter(e.control.value))
         self.select_all = ft.Checkbox(value=False, active_color=T.ACCENT, check_color=T.ON_ACCENT,
-                                      tooltip=tr("Select all"), on_change=self._toggle_all)
+                                      label=tr("Select all"), label_style=ft.TextStyle(color=T.TEXT_2, size=T.T_BODY),
+                                      on_change=self._toggle_all)
+        # a headset screenshot now (SteamVR's own, like the dashboard's button): appears in the grid when Steam saved it
+        self.take_btn = C.primary(tr("Take screenshot"), G.SHOT, self._take)
         self.toolbar = ft.Row([
             self.dropdown, self.select_all, ft.Container(expand=True),
-            C.secondary(tr("Download all"), ft.Icons.DOWNLOAD_ROUNDED, self._download_all),
+            self.take_btn,
+            C.secondary(tr("Download all…"), ft.Icons.DOWNLOAD_ROUNDED, self._download_all),
             C.icon_btn(ft.Icons.REFRESH_ROUNDED, tr("Refresh"), lambda e: self.load()),
         ], spacing=T.S2, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.sel_label = C.body("", T.TEXT, weight=ft.FontWeight.W_500)
         self.sel_bar = ft.Container(ft.Row([
             self.sel_label, ft.Container(expand=True),
-            C.secondary(tr("Download selected"), ft.Icons.DOWNLOAD_ROUNDED, self._download_selected),
-            C.ghost(tr("Delete"), ft.Icons.DELETE_OUTLINE_ROUNDED, lambda e: self.delete(self._chosen())),
+            C.secondary(tr("Download selected…"), ft.Icons.DOWNLOAD_ROUNDED, self._download_selected),
+            C.ghost(tr("Delete…"), ft.Icons.DELETE_OUTLINE_ROUNDED, lambda e: self.delete(self._chosen())),
             C.ghost(tr("Clear"), ft.Icons.CLOSE_ROUNDED, lambda e: self._clear_selection()),
         ], spacing=T.S2), padding=ft.Padding(T.S3, T.px(6), T.S2, T.px(6)), border_radius=T.RADIUS_SM,
             bgcolor=T.ACCENT_SOFT, visible=False)
@@ -107,14 +115,22 @@ class ScreenshotsView:
     # ---------------------------------------------------------------- building
     def mount(self, package: str | None = None) -> ft.Control:
         app = self.app
-        heading, sub = tr("Screenshots"), tr("Pictures you took in the headset (Steam screenshots on the Frame)")
+        heading, sub = tr("Screenshots"), tr("Pictures you took in the headset")
         if not (app.target and app.frame_state == "connected"):
             self._loaded = False  # load again once connected
             return ft.Column([
                 app.top_bar(heading, sub),
-                C.empty_state(ft.Icons.PHOTO_LIBRARY_OUTLINED, tr("Connect your Frame first"),
-                              tr("Screenshots on the Frame can be shown once FramePort is connected to it."),
-                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")))], expand=True)
+                C.empty_state(G.SHOT, tr("Every shot you take in the headset"),
+                              tr("Connect to your Steam Frame to see its screenshots here."),
+                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")),
+                              features=[
+                                  (G.SHOT, tr("Sorted by day"),
+                                   tr("All of Steam's headset screenshots, newest first.")),
+                                  (ft.Icons.VIDEOGAME_ASSET_OUTLINED, tr("Matched to your games"),
+                                   tr("Each shot is labeled with the game you were playing.")),
+                                  (ft.Icons.DOWNLOAD_ROUNDED, tr("Save them to this PC"),
+                                   tr("Download one, a selection or all of them.")),
+                              ])], expand=True)
         if self.root is None:
             # the selection bar below the grid (as in the Library): above it, it pushed the cards down mid-drag
             self.root = ft.Column([app.top_bar(heading, sub), self.toolbar, self.menu, self.sel_bar, self.status],
@@ -159,13 +175,13 @@ class ScreenshotsView:
             self.shots, self.games = r.get("shots") or [], r.get("games") or []
             self.selected &= {s["path"] for s in self.shots}
             self._fill_dropdown()
-            self.checks = {}
+            self.checks, self.tiles, self.hot = {}, {}, set()
             self.grid.controls = []
             if not self.shots:
                 empty = C.empty_state(
                     ft.Icons.PHOTO_CAMERA_OUTLINED, tr("No screenshots yet"),
-                    tr("Take one in the headset with Steam's screenshot shortcut; it shows up here. Screenshots "
-                       "are matched to the FramePort game that was running."))
+                    tr("Take one in the headset with Steam's screenshot shortcut. It shows up here, labeled "
+                       "with the game."))
                 empty.expand, empty.padding = False, T.px(48)  # (expand inside a scrolling column: invalid layout)
                 self.grid.controls = [empty]
             self._update_selection(render=False)
@@ -226,14 +242,29 @@ class ScreenshotsView:
                                                           end=ft.Alignment.BOTTOM_CENTER,
                                                           colors=[ft.Colors.TRANSPARENT, T.soft("#000000", 0.8)]),
                                border_radius=ft.BorderRadius(0, 0, T.RADIUS_SM, T.RADIUS_SM))
+        check.on_focus = lambda e, p=s["path"]: self._set_hot(p, True)
+        check.on_blur = lambda e, p=s["path"]: self._set_hot(p, False)
+        quiet_check = C.quiet(check)
+        quiet_check.left, quiet_check.top = 0, 0
+        # (hidden, not just transparent, off hover: a click on that corner then opens the viewer as everywhere else)
+        copy_btn = ft.Container(
+            ft.Icon(ft.Icons.CONTENT_COPY_ROUNDED, size=T.px(16), color=T.TEXT), width=T.px(30), height=T.px(30),
+            alignment=ft.Alignment.CENTER, border_radius=T.px(15), bgcolor=T.soft("#000000", 0.55), ink=True,
+            tooltip=tr("Copy image"), visible=False, on_click=lambda e, s=s: self.copy(s))
+        copy_btn.right, copy_btn.top = T.px(6), T.px(6)
+        self.copy_btns[s["path"]] = copy_btn
+        overlay = ft.Container(left=0, right=0, top=0, bottom=0, border_radius=T.RADIUS_SM)
         tile = ft.Container(
             ft.Stack([C.art_fill(self._thumb_url(s), radius=T.RADIUS_SM, placeholder_icon=ft.Icons.IMAGE_OUTLINED,
                                  left=0, right=0, top=0, bottom=0),
-                      caption, ft.Container(check, left=0, top=0)]),
+                      overlay, caption, quiet_check, copy_btn]),
             width=T.px(256), height=T.px(144), border_radius=T.RADIUS_SM, ink=True,
+            border=ft.Border.all(2, ft.Colors.TRANSPARENT),
             tooltip=f"{s.get('title') or ''} · {day_label(s.get('time'))} {when}",
             on_click=lambda e, i=i: self.viewer(i),
-            on_hover=lambda e, p=s["path"]: self.drag.hover(p, e.data in (True, "true")))
+            on_hover=lambda e, p=s["path"]: self._hover(p, e.data in (True, "true")))
+        self.tiles[s["path"]] = (tile, quiet_check, overlay)
+        self._paint(s["path"])
         return ft.GestureDetector(content=tile, on_secondary_tap_down=lambda e, s=s: self.open_menu(s,
                                                                                                   e.global_position))
 
@@ -257,6 +288,7 @@ class ScreenshotsView:
         out: list[tuple | None] = []
         if not several:
             out.append((tr("View"), ft.Icons.OPEN_IN_FULL_ROUNDED, lambda e: self.viewer(self.shots.index(s))))
+            out.append((tr("Copy image"), ft.Icons.CONTENT_COPY_ROUNDED, lambda e: self.copy(s)))
         out.append((tr("Download {n} screenshots…").format(n=len(shots)) if several else tr("Download…"),
                     ft.Icons.DOWNLOAD_ROUNDED, lambda e: self._later(self.download, shots)))
         key = filter_key(s.get("package") or "")
@@ -294,36 +326,46 @@ class ScreenshotsView:
     # ---------------------------------------------------------------- selection
     def _toggle(self, path: str, on: bool) -> None:
         (self.selected.add if on else self.selected.discard)(path)
-        check = self.checks.get(path)
-        if check is not None and check.value != on:
-            check.value = on
-            C.update(check)
         self._update_selection()
 
     def _toggle_all(self, e) -> None:
-        on = bool(e.control.value)
-        self.selected = {s["path"] for s in self.shots} if on else set()
-        for check in self.checks.values():
-            if check.value != on:
-                check.value = on
-                C.update(check)
+        self.selected = {s["path"] for s in self.shots} if e.control.value else set()
         self._update_selection()
 
     def _select_all(self) -> None:
         self.selected = {s["path"] for s in self.shots}
-        for check in self.checks.values():
-            if not check.value:
-                check.value = True
-                C.update(check)
         self._update_selection()
 
     def _clear_selection(self) -> None:
         self.selected.clear()
-        for check in self.checks.values():
-            if check.value:
-                check.value = False
-                C.update(check)
         self._update_selection()
+
+    # quiet tiles: the checkbox shows on hover, keyboard focus or while anything is selected
+    def _hover(self, path: str, inside: bool) -> None:
+        self.drag.hover(path, inside)
+        self._set_hot(path, inside)
+
+    def _set_hot(self, path: str, on: bool) -> None:
+        (self.hot.add if on else self.hot.discard)(path)
+        if path in self.tiles and self._paint(path):
+            C.update(self.tiles[path][0])
+
+    def _paint(self, path: str) -> bool:
+        """Properties only: checkbox value + visibility, the accent border and the selection fade. True = changed."""
+        tile, quiet_check, overlay = self.tiles[path]
+        on = path in self.selected
+        check = self.checks[path]
+        copy_btn = self.copy_btns.get(path)
+        before = (check.value, quiet_check.opacity, overlay.bgcolor, overlay.gradient is not None,
+                  copy_btn.visible if copy_btn else None)
+        check.value = on
+        C.reveal(quiet_check, on or path in self.hot or bool(self.selected))
+        if copy_btn is not None:
+            copy_btn.visible = path in self.hot
+        C.selected_style(overlay, on, subtle=True)
+        tile.border = ft.Border.all(2, T.ACCENT if on else ft.Colors.TRANSPARENT)
+        return before != (check.value, quiet_check.opacity, overlay.bgcolor, overlay.gradient is not None,
+                          copy_btn.visible if copy_btn else None)
 
     def _update_selection(self, render: bool = True) -> None:
         n = len(self.selected)
@@ -331,9 +373,12 @@ class ScreenshotsView:
         self.sel_label.value = tr("{n} selected").format(n=n) + (f" · {human(size)}" if size else "")
         self.sel_bar.visible = bool(n)
         self.select_all.value = bool(self.shots) and n == len(self.shots)
+        changed = [path for path in self.tiles if self._paint(path)]
         if render:
             for c in (self.sel_bar, self.select_all):
                 C.update(c)
+            for path in changed:
+                C.update(self.tiles[path][0])
 
     def _chosen(self) -> list[dict]:
         return [s for s in self.shots if s["path"] in self.selected]
@@ -388,24 +433,81 @@ class ScreenshotsView:
             log.info("Screenshots: viewer delete clicked for screenshot %s", state.get("i"))
             close()
             self.delete([shots[state["i"]]])
-
-        dlg = ft.AlertDialog(
-            content=ft.Container(ft.Column([img, ft.Row([
+        page.show_dialog(C.viewer(
+            ft.Container(ft.Column([img, ft.Row([
                 C.icon_btn(ft.Icons.CHEVRON_LEFT_ROUNDED, tr("Previous"), lambda e: show(-1)),
                 ft.Column([caption, details], spacing=0, expand=True),
                 C.icon_btn(ft.Icons.CHEVRON_RIGHT_ROUNDED, tr("Next"), lambda e: show(1)),
-                C.secondary(tr("Download"), ft.Icons.DOWNLOAD_ROUNDED, download),
-                C.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, tr("Delete"), delete),
+                C.secondary(tr("Copy"), ft.Icons.CONTENT_COPY_ROUNDED, lambda e: self.copy(shots[state["i"]])),
+                C.secondary(tr("Download…"), ft.Icons.DOWNLOAD_ROUNDED, download),
+                C.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, tr("Delete…"), delete),
                 C.ghost(tr("Close"), on_click=lambda e: close())], spacing=T.S2,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER)], spacing=T.S2, tight=True), width=T.px(1100)),
-            bgcolor=T.BG, shape=ft.RoundedRectangleBorder(radius=T.RADIUS), content_padding=T.S3)
-        page.show_dialog(dlg)
+                vertical_alignment=ft.CrossAxisAlignment.CENTER)], spacing=T.S2, tight=True), width=T.px(1100))))
         show()
 
     # ---------------------------------------------------------------- actions
     async def _download_selected(self, e=None):
         if self.selected:
             await self.download(self._chosen())
+
+    def _take(self, e=None) -> None:
+        """Take screenshot: the button waits while the Frame saves it (a few seconds), then the grid reloads."""
+        if self.take_btn.disabled:
+            return
+        self.take_btn.disabled = True
+        C.update(self.take_btn)
+        self.app.run_bg(self._take_bg)
+
+    def _take_bg(self) -> None:
+        from ...install import screenshots
+
+        app = self.app
+        try:
+            r = screenshots.take(app.target.frame)
+            if r.get("taken"):
+                app.toast(tr("Screenshot taken"))
+                self.load()
+            elif r.get("reason") == "steamvr":
+                app.toast(tr("SteamVR isn't running on the Frame: put the headset on, then take the screenshot."),
+                          error=True)
+            elif r.get("reason") == "capture" or r.get("hmd") == "Standby":
+                app.toast(tr("The headset is asleep: put it on, then take the screenshot."), error=True)
+            else:
+                app.toast(tr("The Frame didn't save a screenshot ({why}). Try again.").format(
+                    why=r.get("reason") or tr("no reason given")), error=True)
+        except Exception as exc:  # noqa: BLE001
+            app.toast(tr("Couldn't take a screenshot: {error}").format(error=explain(exc)), error=True)
+        finally:
+            self.take_btn.disabled = False
+            C.update(self.take_btn)
+
+    def copy(self, shot: dict) -> None:
+        """The full-size screenshot onto this PC's clipboard, to paste it anywhere (no download needed)."""
+        app = self.app
+
+        def work():
+            from ...core import clipboard
+            from ...install import screenshots
+
+            try:
+                path = screenshots.image_path(app.target.frame, shot)
+                if app.page.web:  # (a browser session: the browser's clipboard, through Flet)
+                    app.page.run_task(self._copy_web, path)
+                    return
+                clipboard.copy_image(path)
+            except Exception as exc:  # noqa: BLE001
+                app.toast(tr("Couldn't copy the screenshot: {error}").format(error=explain(exc)), error=True)
+                return
+            app.toast(tr("Screenshot copied. Paste it anywhere."))
+        app.run_bg(work)
+
+    async def _copy_web(self, path: Path) -> None:
+        try:
+            await ft.Clipboard().set_image(path.read_bytes())
+        except Exception as exc:  # noqa: BLE001
+            self.app.toast(tr("Couldn't copy the screenshot: {error}").format(error=explain(exc)), error=True)
+            return
+        self.app.toast(tr("Screenshot copied. Paste it anywhere."))
 
     async def _download_all(self, e=None):
         if self.shots:
@@ -452,5 +554,5 @@ class ScreenshotsView:
                 self.load()
             self.app.run_bg(work)
         C.confirm(self.app.page, tr_n("Delete {n} screenshot?", "Delete {n} screenshots?", len(shots)),
-                  tr("They are deleted on the Frame and can't be restored. Steam's own screenshot list may still "
-                     "show them until Steam restarts."), tr("Delete"), go, danger=True)
+                  tr("They're deleted on the Frame for good. Steam's own list may show them until Steam "
+                     "restarts."), tr("Delete"), go, danger=True)

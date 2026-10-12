@@ -77,7 +77,7 @@ def show_adapter_dialog(app: FramePortApp, package: str) -> None:
     if g is None:  # installed on the Frame but not in this library: read the values there first
         target = app.target
         if target is None:
-            app.toast(tr("Connect your Frame first"), error=True)
+            app.toast(tr("Connect your Frame first."), error=True)
             return
 
         def load():
@@ -124,7 +124,7 @@ def _open(app: FramePortApp, package: str, g: dict | None, values: dict) -> None
         choices = list(spec[0])
         if v not in [c for c, _ in choices]:
             choices.append((v, str(v)))  # a value set elsewhere (CLI, catalog) stays selectable
-        return ft.Dropdown(value=str(v), width=T.px(220), dense=True, border_color=T.BORDER,
+        return C.dropdown(value=str(v), width=T.px(220),
                            options=[ft.DropdownOption(key=str(c), text=tr(label)) for c, label in choices],
                            on_select=lambda e: set_value(key, e.control.value))
 
@@ -182,7 +182,7 @@ def _open(app: FramePortApp, package: str, g: dict | None, values: dict) -> None
         installed = app.target is not None and (g is None or C.install_state(g, app.frame_info) in
                                                 ("installed", "outdated"))
         if not installed:
-            app.toast(tr("Saved. The settings are used when the game is installed."))
+            app.toast(tr("Saved. They apply when the game is installed."))
             app.refresh_view()
             return
         target = app.target
@@ -196,18 +196,14 @@ def _open(app: FramePortApp, package: str, g: dict | None, values: dict) -> None
 
     show_adv = any(UI[k]["level"] == "advanced" for _, _, keys in sections for k in keys)
     content = ft.Column([
-        C.body(tr("Changes are used the next time the game starts. Not sure? Leave a setting as it is."), T.TEXT_2),
+        C.body(tr("Changes take effect the next time the game starts. Not sure? Leave a setting as it is."), T.TEXT_2),
         *body,
         *([C.switch(tr("Show advanced settings"), value=advanced["on"], on_change=toggle_advanced)]
           if show_adv else []),
     ], spacing=T.S3, scroll=ft.ScrollMode.AUTO, tight=True)
     title = tr("Game settings · {title}").format(title=app._title(package) if g else package)
-    app.page.show_dialog(ft.AlertDialog(
-        title=ft.Text(title, weight=ft.FontWeight.W_600), bgcolor=T.SURFACE_2,
-        shape=ft.RoundedRectangleBorder(radius=T.RADIUS),
-        content=ft.Container(content, width=T.px(640), height=T.px(560)),
-        actions=[C.ghost(tr("Reset to recommended"), ft.Icons.RESTART_ALT_ROUNDED, reset),
-                 C.ghost(tr("Cancel"), on_click=lambda e: app.page.pop_dialog()),
-                 C.primary(tr("Save"), on_click=save)],
-        actions_alignment=ft.MainAxisAlignment.END))
+    app.page.show_dialog(C.dialog(
+        title, content, [C.ghost(tr("Reset to recommended"), ft.Icons.RESTART_ALT_ROUNDED, reset),
+                         C.ghost(tr("Cancel"), on_click=lambda e: app.page.pop_dialog()),
+                         C.primary(tr("Save"), on_click=save)], height=T.px(560)))
     apply_visibility()

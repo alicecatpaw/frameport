@@ -1,5 +1,20 @@
 # Steam Frame runtime reference (SteamOS 0.3.0, build 20260922)
 
+## Setup from the project page (checked 2026-10-10, dev Frame, SteamOS build 20260922)
+
+- Factory Frames have no browser; Steam's taskbar **+** offers Chromium as a Flatpak (`org.chromium.Chromium`,
+  flathub is configured as a system remote). It is the default handler for https links once installed.
+- Desktop Mode has `curl`, `wget`, `python3` 3.12, `konsole`, `kdialog`, `xdg-open`, `avahi-browse`, `systemd-run`;
+  no `wl-copy`/`xclip`.
+- avahi-daemon runs, but `avahi-browse` from an SSH session fails ("Daemon not running": no system D-Bus access
+  there). A stdlib-Python mDNS query works when it listens on port 5353 in the 224.0.0.251 group (like avahi):
+  replies to a random source port are dropped by the Frame's firewall. `bootstrap/setup.sh` does exactly that.
+- The Frame reaches the PC's port 8765 over the home Wi-Fi without any firewall change on the PC side here (WSL in
+  mirrored mode with the earlier FramePort rule state). The PC is also visible through the Frame's hotspot
+  (`wlanap`, 10.35.78.x): the script lists one PC once, by name and words.
+- Dolphin's "executable scripts" setting is the default (ask); `.sh` files open with a `bash.desktop` handler that
+  runs them in a terminal. Not used by the setup (a pasted line is simpler and needs no download prompt).
+
 ## Lepton (Android container)
 - Steam app **3029110 "Lepton"** (runtime) and **3056000 "Lepton Development"** (needs Developer Mode). The binary
   is `<Steam library>/steamapps/common/Lepton/lepton`; FramePort finds it via the appmanifests.
@@ -64,7 +79,7 @@
   submission order (seen 2026-10-01: quads placed before 4XVR's projection layer covered it).
 - Swapchain formats: GLES `GL_SRGB8_ALPHA8` (35907) / `GL_SRGB8` (35905) only, samples = 1. Vulkan: 43 (R8G8B8A8_SRGB)
   and 50, not 37/44 (UNORM).
-- Environment blend: ALPHA_BLEND available (greyscale passthrough cameras).
+- Environment blend: ALPHA_BLEND available (grayscale passthrough cameras).
 - Reference spaces: STAGE bounds are reported as 1×1 m.
 - Display 72 Hz by default in tests. Head pose is only tracked while the headset is worn; otherwise flags 0x3 and
   the session stays below FOCUSED.
@@ -99,7 +114,7 @@
   `/fex-compat-tool %verb% --`, **no** require_tool_appid: it does not use the Steam Linux Runtime. fex-compat-tool
   (Python) runs `<FEX-Emu>/usr/bin/FEX` with RootFS `/usr/share/guestos/fex-mesa` (part of the SteamOS image: an
   x86 Arch-style root with glibc 2.41, Mesa, graphics_provider.json for x86_64 + i386), emulates x86_64 and i386
-  (emulator.json), honours `STEAM_FEX_TSOENABLED`, `STEAM_FEX_MULTIBLOCK`, `STEAM_COMPAT_FEX_CONFIG`, sets
+  (emulator.json), honors `STEAM_FEX_TSOENABLED`, `STEAM_FEX_MULTIBLOCK`, `STEAM_COMPAT_FEX_CONFIG`, sets
   `tu_override_uncached_as_cache_coherent=true` and logs to `/tmp/fex-compat-tool-<pid>.log`. It **exits 1 ("No compat
   data path?") without `STEAM_COMPAT_DATA_PATH`** (keeps Config.json/AppConfig/Server/Telemetry in `<it>/fex-emu/`):
   the Linux launcher exports `<base>/compatdata`. Version seen: FEX-2607-76-g37265b1. ldd can't read x86 programs,
@@ -127,7 +142,7 @@
   create as 1.0; enabled by `XR_ENABLE_API_LAYERS` from launch.sh. Proton's Steam Linux Runtime container drops
   `XR_API_LAYER_PATH` (it keeps `XR_ENABLE_API_LAYERS`), so the agent registers the layer as an explicit layer in
   `~/.local/share/openxr/1/api_layers/explicit.d/` (home is shared into the container) with an absolute library path.
-- Oculus Store builds that delay-load `LibOVRPlatform64_1.dll` (Platform SDK, e.g. Lies Beneath) crash with
+- Oculus Store builds that delay-load `LibOVRPlatform64_1.dll` (Platform SDK, for example Lies Beneath) crash with
   `0xc06d007e` (delay-load module not found): that DLL comes with the Oculus app, which the Frame doesn't have. (No Oculus runtime DLLs or
   registry keys are needed: Revive's LibOVRRT hook works once OpenXR does.)
 - Unreal's Oculus plugin (and LibOVR's `ovr_Detect`) first checks for the Windows event `OculusHMDConnected` (created
@@ -163,17 +178,76 @@
   sha256, no `.picked`); folder apps get it on the PC at add time (`analysis/linux.find_icon`). Not yet seen in
   Desktop Mode on the device.
 
+## Overlay apps (SteamVR / OpenVR overlays, checked 2026-10-10 on the dev Frame, SteamOS 0.4.5)
+OpenVR overlay applications (`VRApplication_Overlay`: fpsVR, wrist watches, ...) work on the Frame itself, also
+over Quest games.
+- The Frame's host SteamVR (`/opt/steamvr/bin/linuxarm64`, always running in the VR session) serves `IVROverlay`
+  010-028 / `IVRApplications_007` to native Linux arm64 clients through its own `libopenvr_api.so` (ctypes is
+  enough: `native/vroverlay_probe/vroverlay_probe.py`). Overlay apps connect from SSH; vrserver logs
+  `New Connect message from … (VRApplication_Overlay)`, `vrcmd --overlays` (`/opt/steamvr/bin/linuxarm64/vrcmd`,
+  LD_LIBRARY_PATH=that dir) lists them `visible`, Steam's VR UI logs `[Overlays] Created: <key>` and loads a
+  dashboard overlay's thumbnail.
+- **Composited over Lepton (Quest) games**: with 4XVR running headless (FrameBridge 72 fps), the probe's head-locked
+  overlay appeared in the headset view (`/dev/video99`, see "Video of the headset view") on top of 4XVR's theatre.
+  The Android SteamVR runtime inside Lepton submits to the same host compositor, which draws host overlays on top.
+- Seeing pixels without a worn headset: the compositor pauses in standby (headset view = black) and fades to a
+  solid colour without tracking. For a few seconds after setting `power/pauseCompositorOnStandby` and
+  `steamvr/forceFadeOnBadTracking` to false (IVRSettings; neither key is in the user's steamvr.vrsettings, so
+  `RemoveKeyInSection` restores the default) the headset view shows the real composition (2 fps grabs: frames 7-10
+  of 16 had the picture, the rest the fade colour). Restore both keys afterwards.
+- **Windows overlay apps under Proton (ARM64)**: Temporal Reality's Windows build (Python/pyopenvr, x64) under
+  Proton 11 (SteamGameId set, FramePort's timefix layer) created its overlays on the Frame's SteamVR (`vrcmd
+  --overlays`: `temporalreality.watch`, `.settings` dashboard + 512x512 thumbnail), so Proton's vrclient bridges
+  `VRApplication_Overlay` too. Not seen as pixels (that watch only shows on a tracked left controller). fpsVR (.NET,
+  wine-mono) ran 60 s under Proton (SteamAPI ok: "Game process added: AppID 908520") but never loaded
+  openvr_api.dll and quit by itself (presumably it waits for a Windows SteamVR process). A freestanding CRT-less x64
+  exe (`native/vroverlay_probe/fp_vroverlay_probe.c`) died at its first kernel32 call (`c000001d` in the x64
+  emulation thunk); a normal MSVC/MinGW build should be used for Windows probes.
+- **Registration** (what SteamVR honours on the Frame): `IVRApplications::AddApplicationManifest(path, false)` from
+  a utility client, live; the path is kept in `~/.config/openvr/config/appconfig.json` `manifest_paths`.
+  `SetApplicationAutoLaunch` is accepted (GetApplicationAutoLaunch → true; vrserver has
+  `CAppInfoManager::StartAutolaunchOverlays`) but on the dev Frame it never reached `steamvr.vrsettings` (no
+  autolaunch entry for `temporalreality.overlay` there, appconfig.json holds only manifest_paths) and the owner's
+  watch didn't start by itself, so FramePort doesn't rely on it (see "Autostart" below). The linuxarm64 vrserver only reads
+  **`binary_path_linux_arm`**: a manifest with `binary_path_linux` alone is skipped ("must specify binary_path for
+  launch_type binary. Skipping"; Steam's own steamapps.vrmanifest entries are skipped the same way), so an app's
+  own Linux manifest/`--install` that only writes binary_path_linux can't be launched by SteamVR on the Frame.
+  `LaunchApplication(key)` then starts the binary (Temporal Reality's launch.sh: process up, overlays created).
+- A Steam shortcut of an overlay app and a game shortcut run at the same time (Temporal Reality, then 4XVR, both
+  through `steam://rungameid`: both "Game process added", both kept running).
+- FramePort (agent v75): `register_vr_overlay` writes `<anchor>/frameport-overlay.vrmanifest` (the app's own key,
+  name and image from its bundled manifest, binary = launch.sh in `binary_path_linux_arm` + `binary_path_linux`,
+  absolute paths) and registers it; `unregister_vr_overlay`, uninstall and purge remove it; `ensure_host_fixes`
+  registers ones SteamVR missed (it wasn't running). Overlay apps skip launch tests, the Linux launcher's
+  Steam-parent watchdog (`FRAMEPORT_OVERLAY=1`) and don't count as a running game.
+- **Autostart (agent v76)**: the deployment's `overlay.autostart` is the source of truth (SetApplicationAutoLaunch
+  is still set for SteamVR builds that honour it). While at least one installed overlay app has it on,
+  `ensure_host_fixes` keeps the user service `frameport-vr-overlays.service` (`~/.config/systemd/user`, enabled for
+  default.target, Restart=always) = `frameport_agent.py _vr_overlay_watch`: every 5 s it checks the vrserver it knows
+  (`/proc/<pid>/stat`: name + start time; a full /proc scan only when that one is gone); a new vrserver (boot,
+  SteamVR restart, or the first look after the service starts) gets one round in a child process
+  (`_vr_overlay_round`, timeout): wait ≤180 s until IVRApplications answers, 15 s for SteamVR's own auto-launch,
+  then `launch_vr_overlay` for each autostart app that isn't running (a process with its install folder/anchor in
+  the command line, or GetApplicationProcessId ≠ 0: never a second copy). The handled vrserver is kept in
+  `~/.cache/frameport-vr-overlays.json`, so an agent update (the watcher exits when its file changes, systemd starts
+  the new one) doesn't restart an app the user closed. Log: `~/.local/share/frameport/vr-overlays.log` (128 KB, one
+  `.1`). Removed when no overlay app has autostart (game page switch, uninstall), by purge, and by the kill switch
+  `~/.local/share/frameport/vr-overlays.disabled` (or `FRAMEPORT_NO_OVERLAY_AUTOSTART=1` in the agent's environment).
+  Cost: one idle python3 (~30-40 MB RSS, no CPU between polls). Dev Frame 2026-10-10 (vrserver up since boot,
+  Temporal Reality already started from its Steam shortcut): `new SteamVR (vrserver 2297)` →
+  `linux.temporalreality: running` (not started again). Start after a real SteamVR start/boot: not yet seen.
+
 ## Video of the headset view (surveyed 2026-10-05; used by the Live view tab)
 - `steamvr-v4l2cam.service` (user unit, part of gamescope-session.target, `Restart=always`) runs SteamVR's
   `/opt/steamvr/bin/linuxarm64/v4l2cam --output=99`: it reads the compositor's "Headset View" (IVRHeadsetView) and
   writes it to a v4l2loopback webcam named **"SteamVR"** (`/dev/video99`, 1920x1080 RGB24, advertised 30 fps, frames
   arrive at the display rate). Nothing on the Frame reads it by default; idle it costs nothing, read ~0.2 core.
   It shows what the wearer sees (SteamVR home, Steam's panels; a game's layers are expected but not yet seen in it).
-  Black and ~1 fps (one frame per ~1.0 s) while the headset sleeps (standby): a 30 fps stream then repeats each
+  Black and ~1 fps (one frame per ~1.0 s) while the Frame sleeps (standby): a 30 fps stream then repeats each
   frame in bursts, which looks like a stall in a player. Its size follows SteamVR's headset view (v4l2cam has no size
   option), so the live view only scales down (360p/480p/720p/1080p) or sends it as is ("full").
 - Sound: `pactl get-default-sink` (`alsa_loopback_device.stereo.alsa_output.platform-sound.HiFi__Speaker__sink`) and its
-  `.monitor` source carry what the headset plays; the Frame's ffmpeg has the `pulse` input and `aac`. Timestamps: pulse
+  `.monitor` source carry what the Frame plays; the Frame's ffmpeg has the `pulse` input and `aac`. Timestamps: pulse
   uses the wall clock, v4l2 CLOCK_MONOTONIC → `-ts mono2abs` on the v4l2 input. Don't force
   `-use_wallclock_as_timestamps` on the pulse input: it stamped bursts of AAC packets with one time.
 - Steam's own game recording / Remote Play / broadcast capture the **gamescope** PipeWire node (`CDesktopCapturePipeWire:
@@ -200,11 +274,11 @@
     Baseline..Constrained High, levels up to 6.0.
   - The `steamos` user can open it (group video).
   - The panel's current refresh rate can be read without privileges through DRM: `/dev/dri/card0` is mode 0666, and
-    GETCRTC reports e.g. `2*2160x2160_96` (clock 1402720 kHz / 4448 × 3285 = 96 Hz) even while the headset sleeps.
+    GETCRTC reports for example `2*2160x2160_96` (clock 1402720 kHz / 4448 × 3285 = 96 Hz) even while the Frame sleeps.
     The panel offers 72/80/90/96/108/120/144 Hz.
   - `/dev/video99` (v4l2loopback) has `max_buffers=2`: a reader asking for more gets 2.
   - Mid-stream keyframe requests (FORCE_KEY_FRAME) take effect on the next frame, and the GOP restarts from there.
-  - Measured 2026-10-07 with the headset asleep (still picture):
+  - Measured 2026-10-07 with the Frame asleep (still picture):
     - `fp_venc` alone at 32/36 fps: 1% of a core at 1080p, 2.5% at 720p.
     - Live view end to end: `fp_venc` 2.6% + ffmpeg 8.4% (AAC encoding + muxing).
   - Conversion cost per new picture (self-test, NEON, 2026-10-07):
@@ -265,7 +339,7 @@ All readable by the steamos user without root; the agent reads them directly (no
 | Power | hwmon `max34417_*` `power{1-4}_{label,input}` (µW) | `vph` = whole system (~3.6 W idle), `gfx` = GPU, `apc0/1/2` = CPU clusters, `nsp1/2` = NPU; each read is an I2C transfer (~0.7 ms wall), so only these are read |
 | Battery | `power_supply/max1720x_bat_7-36` | `current_now` (µA, negative = draining) × `voltage_now` (µV) = watts; `time_to_empty_now`/`time_to_full_now` (s), `cycle_count`, `health`, `temp` (0.1 °C) |
 | Game fps | `<base>/launch.log` lines `FrameBridge: pacing: N fps …` (every ~5 s) | Quest games only; SteamVR writes PC VR frame stats only as an end-of-session summary in `vrcompositor.txt` |
-| Game container | conmon `-n lepton-steamlaunch-<appid>`; its child's `/proc/<pid>/cgroup` → `cpu.stat`, `memory.current` | The container's ~90 Android processes show as uid 1000 on the host and can be signalled (4XVR, 2026-10-07); Android names them after the package's last 15 characters (`lus4xvrplayerov`), the full name is in `cmdline` |
+| Game container | conmon `-n lepton-steamlaunch-<appid>`; its child's `/proc/<pid>/cgroup` → `cpu.stat`, `memory.current` | The container's ~90 Android processes show as uid 1000 on the host and can be signaled (4XVR, 2026-10-07); Android names them after the package's last 15 characters (`lus4xvrplayerov`), the full name is in `cmdline` |
 
 Cost: a naive sample (fds of ~520 processes scanned) took 43 ms CPU. With kernel threads skipped after their first
 sighting, command lines checked once per process, render fds cached (rescanned every 60 s, every 4 s for busy young

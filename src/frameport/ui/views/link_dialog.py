@@ -1,5 +1,7 @@
 """Install links ("Install with FrameDrop" buttons, frameport:// links, pasted links): read the manifest, ask the user,
-download, add to the library and install on the Frame. The protocol itself is in deeplink.py (no Flet)."""
+download, add to the library and install on the Frame. The protocol itself is in deeplink.py (no Flet).
+The homepage's example button (deeplink.DEMO_MANIFEST) gets a demo question instead (show_demo): no job, no network,
+nothing added; its Install plays an easter egg (ui/easter.demo_install)."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -25,8 +27,8 @@ def kind_label(kind: str | None) -> str:
 
 def show_paste_dialog(app: FramePortApp) -> None:
     """Add games → "Install from link…": paste a FrameDrop/FramePort button link, a manifest or a file URL."""
-    field = ft.TextField(label=tr("Link"), hint_text="https://framedropvr.com/install?manifest=…", autofocus=True,
-                         width=T.px(560), border_color=T.BORDER)
+    field = C.field(label=tr("Link"), hint_text="https://frameport.app/install?manifest=…", autofocus=True,
+                    expand=True)
 
     def go(e=None):
         text = (field.value or "").strip()
@@ -35,16 +37,21 @@ def show_paste_dialog(app: FramePortApp) -> None:
         app.page.pop_dialog()
         open_link(app, text, pasted=True)
     field.on_submit = go
-    app.page.show_dialog(ft.AlertDialog(
-        title=ft.Text(tr("Install from a link")), bgcolor=T.SURFACE_2,
-        content=ft.Column([
-            C.body(tr("Paste the address of an \"Install with FrameDrop\" button (right-click it → Copy link), a "
-                      "FramePort or FrameDrop manifest (.json) or a direct link to an APK, a Linux build (.zip) or a "
-                      "Windows program (.exe).")),
+    app.page.show_dialog(C.dialog(
+        tr("Install from a link"),
+        ft.Column([
+            C.body(tr("Paste an install link: an install button's address, a manifest (.json) or a direct link to "
+                      "an APK, .zip or .exe.")),
             ft.Row([field, C.help_icon("install_links")]),
-        ], tight=True, spacing=T.S3, width=T.px(600)),
+        ], tight=True, spacing=T.S3),
         actions=[C.ghost(tr("Cancel"), on_click=lambda e: app.page.pop_dialog()),
                  C.primary(tr("Continue"), ft.Icons.ARROW_FORWARD_ROUNDED, on_click=go)]))
+
+
+def route(req: deeplink.InstallRequest) -> str:
+    """"demo" (the homepage's example button: answered here, nothing fetched) or "fetch" (read the manifest in a
+    job, then ask)."""
+    return "demo" if req.demo else "fetch"
 
 
 def open_link(app: FramePortApp, text: str, pasted: bool = False) -> None:
@@ -55,9 +62,12 @@ def open_link(app: FramePortApp, text: str, pasted: bool = False) -> None:
     except deeplink.LinkError as exc:
         app.toast(tr("Can't use that link: {reason}").format(reason=str(exc)), error=True)
         return
+    if route(req) == "demo":
+        show_demo(app, pasted)
+        return
 
     def run(job: Job):
-        job.reporter.stage("Reading the install link")
+        job.reporter.stage(tr("Reading the install link"))
         m = deeplink.fetch_manifest(req)
         sizes = {f.url: deeplink.head_size(f.url) for f in m.files}
         icon = deeplink.fetch_icon(m)  # FramePort's manifest extension (None without one)
@@ -106,10 +116,10 @@ def _confirm(app: FramePortApp, m: deeplink.Manifest, sizes: dict, pasted: bool,
     notes = [C.callout(tr("Only install software from sites you trust. FramePort downloads it from {host} and "
                           "installs it on your Frame.").format(host=m.host or _host(m.source)), "warn")]
     if not frame:
-        notes.append(C.callout(tr("No Frame is connected: the game is added to your library now and installs once "
-                                  "the Frame is connected."), "info"))
+        notes.append(C.callout(tr("No Frame connected: the game goes to your library now and installs when the Frame "
+                                  "connects."), "info"))
     if m.main.kind == deeplink.LINUX:
-        notes.append(C.body(tr("Linux builds must be made for arm64 (x86_64 builds run through translation, slower)."),
+        notes.append(C.body(tr("Linux builds should be made for arm64; others run slower."),
                             T.TEXT_3))
     heading = tr("Install {name}?").format(name=m.name)
     intro = tr("You pasted a link to {name}.") if pasted else tr("A web page asked FramePort to install {name}.")
@@ -122,7 +132,7 @@ def download_and_install(app: FramePortApp, m: deeplink.Manifest, icon=None) -> 
     def run(job: Job):
         rep = job.reporter
         path = deeplink.download(m, rep)
-        rep.stage("Adding to the library")
+        rep.stage(tr("Adding to the library"))
         g = pipeline.add_from_link(m, path, rep, icon=icon)
         pkg = g["package"]
         try:
@@ -136,3 +146,30 @@ def download_and_install(app: FramePortApp, m: deeplink.Manifest, icon=None) -> 
         app.page.run_thread(lambda: app.install(pkg, "frame"))  # asks the usual install questions, then queues it
         return tr("Downloaded {name}").format(name=g.get("title") or m.name)
     return app.submit(tr("Download {name}").format(name=m.name), run, None, "task")
+
+
+DEMO_COVER = "demo-cool-game"  # ui/icons/demo-cool-game.svg (also the site's site/public/demo/cool-game.svg)
+
+
+def show_demo(app: FramePortApp, pasted: bool = False) -> None:
+    """The example button's install question: the usual layout for the placeholder "Cool Game", marked as a demo.
+    Install plays easter.demo_install; nothing is downloaded, added or queued."""
+    from .. import easter
+
+    m = deeplink.demo_manifest()
+    cover = C._asset_src(DEMO_COVER)
+    header = ft.Row([
+        ft.Image(src=cover, width=T.px(48), height=T.px(64), fit=ft.BoxFit.COVER, border_radius=T.RADIUS_SM),
+        ft.Column([
+            ft.Row([C.pill(tr("Demo"), T.SECONDARY)], tight=True),
+            C.body(tr("This is the example button from frameport.app. Real buttons install real games."), T.TEXT),
+        ], spacing=T.S1, tight=True, expand=True),
+    ], spacing=T.S3, vertical_alignment=ft.CrossAxisAlignment.START)
+    f = m.main
+    file_row = ft.Column([
+        C.body(f.filename, T.TEXT, weight=ft.FontWeight.W_500, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+        C.meta(" · ".join((kind_label(f.kind), tr("demo: nothing is downloaded")))),
+    ], spacing=T.px(2), tight=True)
+    intro = tr("You pasted a link to {name}.") if pasted else tr("A web page asked FramePort to install {name}.")
+    C.confirm(app.page, tr("Install {name}?").format(name=m.name), intro.format(name=m.name), tr("Install"),
+              lambda: easter.demo_install(app, cover), extra=ft.Column([header, file_row], spacing=T.S3, tight=True))

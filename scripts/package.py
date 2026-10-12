@@ -72,6 +72,9 @@ def main() -> int:
                    # translations (data files PyInstaller doesn't pick up from the imports)
                    "--add-data", f"{ROOT / 'src/frameport/locales'}{sep}frameport/locales",
                    "--add-data", f"{public_xml}{sep}pyaxmlparser/resources",
+                   # the logo and the GUI's own glyphs (SVG)
+                   "--add-data", f"{ROOT / 'src/frameport/ui/icons'}{sep}frameport/ui/icons",
+                   "--icon", str(ROOT / "src/assets/icon.png"),
                    "--distpath", str(ROOT / "dist"), "--yes"]
             if TARGET in ("linux", "windows"):
                 cmd.append("--onedir")  # a folder: the bundle check sees the agent source, the archive the app

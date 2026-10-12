@@ -1508,6 +1508,40 @@ def test_linux_x86_apps_run_through_fex(monkeypatch, tmp_path):
     assert text.index("STEAM_COMPAT_DATA_PATH") < text.index("fex-compat-tool")
 
 
+def test_hmd_state_from_vrserver_log(monkeypatch, tmp_path):
+    a = load_agent(monkeypatch, tmp_path)
+    logs = Path(a.STEAM) / "logs"
+    logs.mkdir(parents=True)
+    assert a.hmd_state() is None
+    (logs / "vrserver.txt").write_text("x cv: [CCVTrackedHmdDriver] in StateActive\n"
+                                       "y cv:  [CCVTrackedHmdDriver] in StateStandby \n")
+    assert a.hmd_state() == "Standby"
+
+
+def test_take_screenshot_waits_for_steams_file(monkeypatch, tmp_path):
+    """take_screenshot asks SteamVR (vr_screenshot) and reports the shot Steam saved, or why none came."""
+    a = load_agent(monkeypatch, tmp_path)
+    shots = Path(a.STEAM) / "userdata" / "123" / "760" / "remote" / a.STEAMVR_APPID / "screenshots"
+    shots.mkdir(parents=True)
+    (shots / "20261008120000_1.jpg").write_bytes(b"old")
+
+    def submitted():
+        (shots / "20261008221922_1.jpg").write_bytes(b"new")  # Steam saves the flat shot...
+        (shots / "20261008221922_1_vr.jpg").write_bytes(b"stereo")  # ...and the stereo one (not listed)
+    monkeypatch.setattr(a, "vr_screenshot", submitted)
+    r = a.cmd_take_screenshot({"wait": 2})
+    assert r["taken"] and r["path"].endswith("20261008221922_1.jpg") and r["reason"] is None
+    monkeypatch.setattr(a, "vr_screenshot", lambda: "capture")  # the headset sleeps: nothing captured
+    r = a.cmd_take_screenshot({"wait": 0.5})
+    assert r["taken"] is False and r["reason"] == "capture"
+
+
+def test_vr_screenshot_without_steamvr(monkeypatch, tmp_path):
+    a = load_agent(monkeypatch, tmp_path)
+    monkeypatch.setattr(a, "OPENVR_LIBS", (str(tmp_path / "missing.so"),))
+    assert a.vr_screenshot() == "steamvr"
+
+
 def test_game_logs_collect_unity_player_log(monkeypatch, tmp_path):
     """PC VR launch tests and diagnostics include Unity's Player.log (+ prev, crash error.log) from the Proton prefix
     (GitHub #105: SUPERHOT VR quit without a trace in the Proton logs)."""
@@ -1618,3 +1652,97 @@ def test_launch_test_window_starts_when_the_app_starts(monkeypatch, tmp_path):
     monkeypatch.setattr(a, "run", lambda *x, **k: type("R", (), {"returncode": 0, "stderr": ""})())
     res = a.cmd_launch_test({"package": "com.x.y", "seconds": 45})
     assert res["state"] == "RUNNING" and res["elapsed"] >= 90 + 45
+
+
+def test_rename_keeps_the_shortcut_appid(monkeypatch, tmp_path):
+    """Renaming an installed game (agent v77) changes deployment.json's title and the shortcut's name; the shortcut
+    keeps its appid (Play, grid art and the game's container depend on it)."""
+    a = load_agent(monkeypatch, tmp_path)
+    anchor = tmp_path / "Applications/quest-frame/com.x.y"
+    anchor.mkdir(parents=True)
+    exe = f'"{anchor}/launch.sh"'
+    appid = a.shortcut_appid(exe, "com.x.y")
+    (anchor / "deployment.json").write_text(json.dumps(
+        {"package": "com.x.y", "appid": appid, "base": str(anchor), "title": "com.x.y", "kind": "quest"}))
+    cfg = tmp_path / ".local/share/Steam/userdata/42/config"
+    cfg.mkdir(parents=True)
+    vdf = cfg / "shortcuts.vdf"
+    assert a.upsert_shortcut(str(vdf), exe, "com.x.y", str(anchor)) == appid
+    started = []
+    monkeypatch.setattr(a, "cmd_shortcuts", lambda args: (started.append(args), {"started": True})[1])
+    with pytest.raises(a.AgentError, match="empty"):
+        a.cmd_rename({"package": "com.x.y", "title": " \n\t "})
+    with pytest.raises(a.AgentError, match="not installed"):
+        a.cmd_rename({"package": "com.other", "title": "X"})
+    r = a.cmd_rename({"package": "com.x.y", "title": "  Vader Immortal:\nEpisode II  "})
+    assert r["renamed"] and r["title"] == "Vader Immortal: Episode II" and r["appid"] == appid
+    assert started == [{"packages": ["com.x.y"], "restart": True}]
+    dep = json.loads((anchor / "deployment.json").read_text())
+    assert dep["title"] == "Vader Immortal: Episode II" and dep["appid"] == appid
+    # what the shortcuts worker then does with Steam closed: same appid, new name, one entry
+    monkeypatch.setattr(a, "devkit_gameid", lambda pkg: None)
+    result = {"added": [], "errors": []}
+    a.update_library("42", ["com.x.y"], result)
+    assert not result["errors"] and result["added"][0]["appid"] == appid
+    entries = list(a.vdf_decode(vdf.read_bytes())["shortcuts"].values())
+    assert len(entries) == 1 and entries[0]["appname"] == "Vader Immortal: Episode II"
+    assert entries[0]["appid"] & 0xFFFFFFFF == appid
+    # the same name again: nothing to do, no Steam restart
+    started.clear()
+    r = a.cmd_rename({"package": "com.x.y", "title": "Vader Immortal: Episode II"})
+    assert not r["renamed"] and not started
+    assert len(a.cmd_rename({"package": "com.x.y", "title": "x" * 300, "shortcuts": False})["title"]) == a.TITLE_MAX
+
+
+def test_two_revive_games_keep_their_own_shortcuts(monkeypatch, tmp_path):
+    """Every Revive game on a PC starts ReviveInjector.exe: shortcuts are told apart by the game in the launch
+    options (one overwrote the other before); a changed injector flag still updates the same shortcut."""
+    a = load_agent(monkeypatch, tmp_path)
+    vdf = tmp_path / "shortcuts.vdf"
+    exe = '"C:\\\\Revive\\\\ReviveInjector.exe"'
+    one = a.upsert_shortcut(str(vdf), exe, "Game One", '"D:\\\\G1\\\\"', "", "Rift via Revive",
+                            launch_options='/openxr "D:\\\\G1\\\\One.exe"')
+    two = a.upsert_shortcut(str(vdf), exe, "Game Two", '"D:\\\\G2\\\\"', "", "Rift via Revive",
+                            launch_options='"D:\\\\G2\\\\Two.exe"')
+    assert one != two
+    again = a.upsert_shortcut(str(vdf), exe, "Game One", '"D:\\\\G1\\\\"', "", "Rift via Revive",
+                              launch_options='"D:\\\\G1\\\\One.exe"')
+    assert again == one
+    names = sorted(v["appname"] for v in a.vdf_decode(vdf.read_bytes())["shortcuts"].values())
+    assert names == ["Game One", "Game Two"]
+
+
+def test_game_threads_reports_stuck_threads(monkeypatch, tmp_path):
+    """GitHub #157: diagnostics saved while a game hangs show what each thread waits in."""
+    a = load_agent(monkeypatch, tmp_path)
+    proc = tmp_path / "proc"
+
+    def task(pid, tid, comm, ticks, wchan, syscall):
+        t = proc / str(pid) / "task" / str(tid)
+        t.mkdir(parents=True)
+        (t / "stat").write_text(f"{tid} ({comm}) S 1 1 1 0 -1 0 0 0 0 0 {ticks} 0 0 0 20 0 1 0")
+        (t / "comm").write_text(comm + "\n")
+        (t / "wchan").write_text(wchan)
+        (t / "syscall").write_text(syscall)
+
+    (proc / "200").mkdir(parents=True)
+    (proc / "200" / "cmdline").write_text("com.example.game\0")
+    task(200, 200, "GameThread", 50, "futex_wait_queue", "98 0x1 0x2")
+    task(200, 201, "RenderThread", 10, "do_epoll_wait", "22 0x1")
+    (proc / "200" / "net").mkdir()
+    (proc / "200" / "net" / "tcp").write_text(
+        "  sl  local_address rem_address   st\n"
+        "   0: 0100007F:1F90 0B01A8C0:01BB 02 00000000:00000000\n")
+    (proc / "300").mkdir()
+    (proc / "300" / "cmdline").write_text("com.other\0")
+
+    def sleep(_):  # GameThread uses 1 s of CPU between the two samples
+        (proc / "200" / "task" / "200" / "stat").write_text(
+            "200 (GameThread) R 1 1 1 0 -1 0 0 0 0 0 150 0 0 0 20 0 1 0")
+
+    out = a.game_threads("com.example.game", proc=str(proc), samples=2, gap=1, sleep=sleep)
+    assert "com.example.game (pid 200, 2 threads)" in out
+    game = next(ln for ln in out.splitlines() if "GameThread" in ln)
+    assert "futex" in game and "futex_wait_queue" in game and f"{100 * 1000 // a.CLK_TCK}" in game
+    assert "epoll_pwait" in out and "SYN_SENT" in out and "remote=local:443" in out
+    assert "192.168" not in out and a.game_threads("com.missing", proc=str(proc)) is None

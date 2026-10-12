@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 # modules that read settings at import time (UI) run during collection, before the per-test fixture below
 os.environ["FRAMEPORT_HOME"] = tempfile.mkdtemp(prefix="frameport-tests-")
+os.environ.pop("FRAMEPORT_WINDOWS_DATA", None)  # a WSL dev shell may share the Windows data folder: never in tests
 
 
 @pytest.fixture(autouse=True)

@@ -46,10 +46,10 @@ class ZinkShaderFix(Patch):
     description = ("Loads FramePort's shader-fix Vulkan layer into an OpenGL ES game. On the Frame, OpenGL ES runs on "
                    "Zink (Mesa's GL on Vulkan); the layer sits between Zink and the driver and inserts the words of "
                    "the adapter setting zink_shader_fix into the SPIR-V modules whose size and SHA-256 match (every "
-                   "other module is untouched), e.g. stores that set loop counters and accumulators a shader reads "
-                   "before writing, which hang the GPU (Vader Immortal's lightspeed jump; found by Klownicle, GitHub "
-                   "#49). Does nothing without zink_shader_fix (or zink_shader_dump) in the recipe. The layer adds "
-                   "itself to Android's Vulkan debug layer list for the game's process only.")
+                   "other module is untouched), for example stores that set loop counters and accumulators a shader "
+                   "reads before writing, which hang the GPU (Vader Immortal's lightspeed jump; found by Klownicle, "
+                   "GitHub #49). Does nothing without zink_shader_fix (or zink_shader_dump) in the recipe. The layer "
+                   "adds itself to Android's Vulkan debug layer list for the game's process only.")
     order = 73
 
     def applies(self, a):

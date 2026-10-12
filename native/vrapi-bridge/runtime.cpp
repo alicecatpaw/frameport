@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "runtime.h"
+#include "fov_cache.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
 #include <thread>
@@ -44,6 +46,49 @@ static bool symmetricFovDegrees(const XrFovf& first, const XrFovf& second,
 static bool load(const char* name, PFN_xrVoidFunction* target) {
     auto& s = runtime();
     return xrOk(s.xr.xrGetInstanceProcAddr(s.instance, name, target), name) && *target;
+}
+// FramePort: the live FOV of earlier sessions for games that read it before any session (see fov_cache.h)
+static bool savedFovPath(char* buffer, size_t size) {
+    char cmdline[256] = {0};
+    if (FILE* f = std::fopen("/proc/self/cmdline", "r")) {
+        cmdline[std::fread(cmdline, 1, sizeof(cmdline) - 1, f)] = 0;
+        std::fclose(f);
+    }
+    return fovcache::path(cmdline, buffer, size);
+}
+static void loadSavedFov() {
+    auto& s = runtime();
+    char path[512], text[256] = {0};
+    if (!savedFovPath(path, sizeof(path))) return;
+    FILE* f = std::fopen(path, "r");
+    if (!f) return;
+    text[std::fread(text, 1, sizeof(text) - 1, f)] = 0;
+    std::fclose(f);
+    float fov[2];
+    if (!fovcache::parse(text, fov)) return;
+    s.savedFovDegrees = {fov[0], fov[1]};
+    s.savedFovValid = true;
+    OVP_LOG("FOV of an earlier session: %.2f x %.2f degrees", fov[0], fov[1]);
+}
+static void saveLiveFov() {
+    auto& s = runtime();
+    const float now[2] = {s.locatedFovDegrees[0], s.locatedFovDegrees[1]};
+    const float saved[2] = {s.savedFovDegrees[0], s.savedFovDegrees[1]};
+    if (!s.locatedFovValid || !fovcache::plausible(now[0], now[1]) || !fovcache::changed(s.savedFovValid, saved, now))
+        return;
+    s.savedFovDegrees = {now[0], now[1]};  // also when it can't be written: tried once per change, not every frame
+    s.savedFovValid = true;
+    char path[512], tmp[540], text[96];
+    if (!savedFovPath(path, sizeof(path))) return;
+    std::snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE* f = std::fopen(tmp, "w");
+    if (!f) return;
+    const int n = fovcache::format(text, sizeof(text), now);
+    const bool ok = n > 0 && std::fwrite(text, 1, static_cast<size_t>(n), f) == static_cast<size_t>(n);
+    if (std::fclose(f) == 0 && ok && std::rename(tmp, path) == 0)
+        OVP_LOG("live FOV %.2f x %.2f degrees saved for the next start", now[0], now[1]);
+    else
+        std::remove(tmp);
 }
 static bool referenceSpace(XrReferenceSpaceType type, const XrPosef& pose, XrSpace& space) {
     auto& s = runtime();
@@ -94,6 +139,9 @@ static void shutdown() {
     s.locatedFovValid = false;
     s.recommendedFovDegrees = {};
     s.locatedFovDegrees = {};
+    s.savedFovValid = false;
+    s.savedFovDegrees = {};
+    s.loggedFovSource = -1;
     s.recenterCount = 0;
     s.loggedDisplayRefreshRateSource = DisplayRefreshRateSource::Unqueried;
     s.loggedDisplayRefreshRate = 0;
@@ -284,6 +332,23 @@ bool beginFrame(int64_t index) {
         // Steam Frame reports poses as VALID without the TRACKED bits here, so only validity is required.
         constexpr XrSpaceLocationFlags tracked = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
         const bool visible = s.sessionState == XR_SESSION_STATE_VISIBLE || s.sessionState == XR_SESSION_STATE_FOCUSED;
+        if (!s.locatedFovValid) {
+            // The views' FOV doesn't depend on tracking: take it as soon as the session runs (also headless, without
+            // anyone wearing the headset), so it is saved for games that ask before their next session.
+            XrViewLocateInfo fovInfo{XR_TYPE_VIEW_LOCATE_INFO};
+            fovInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            fovInfo.displayTime = s.frame.predictedDisplayTime;
+            fovInfo.space = s.viewSpace;
+            XrViewState fovState{XR_TYPE_VIEW_STATE};
+            uint32_t fovCount = 0;
+            if (XR_SUCCEEDED(s.xr.xrLocateViews(s.session, &fovInfo, &fovState, 2, &fovCount, s.views.data())) &&
+                fovCount == 2 && symmetricFovDegrees(s.views[0].fov, s.views[1].fov, s.locatedFovDegrees)) {
+                s.locatedFovValid = true;
+                OVP_LOG("FOV located before tracking: %.2f x %.2f degrees (view state 0x%llx)", s.locatedFovDegrees[0],
+                        s.locatedFovDegrees[1], (unsigned long long)fovState.viewStateFlags);
+                saveLiveFov();
+            }
+        }
         const bool located = visible &&
             xrOk(s.xr.xrLocateSpace(s.viewSpace, s.localSpace, s.frame.predictedDisplayTime, &head), "initial eye-level origin");
         static int logged;
@@ -325,6 +390,7 @@ bool beginFrame(int64_t index) {
     }
     s.locatedFovValid = symmetricFovDegrees(
         s.views[0].fov, s.views[1].fov, s.locatedFovDegrees);
+    saveLiveFov();
     input::sync();
     return true;
 }
@@ -519,6 +585,7 @@ VRAPI int vrapi_Initialize(const ovrInitParms* parms) {
         symmetricFovDegrees(s.viewConfigFov[0].recommendedFov,
                             s.viewConfigFov[1].recommendedFov,
                             s.recommendedFovDegrees);
+    if (!s.recommendedFovValid) loadSavedFov();
     s.colorSpaceExtension = has(XR_FB_COLOR_SPACE_EXTENSION_NAME);
     s.performanceExtension = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
     s.threadExtension = has(XR_KHR_ANDROID_THREAD_SETTINGS_EXTENSION_NAME);
@@ -680,10 +747,20 @@ VRAPI float vrapi_GetSystemPropertyFloat(const ovrJava*, int property) {
     if (property == 4) return queryDisplayRefreshRate();
     if (property == 7 || property == 8) {
         const size_t axis = static_cast<size_t>(property - 7);
-        // Live optical FOV supersedes a provisional startup recommendation.
-        if (s.locatedFovValid) return s.locatedFovDegrees[axis];
-        if (s.recommendedFovValid) return s.recommendedFovDegrees[axis];
-        return 90.0f;
+        // Live optical FOV supersedes a provisional startup recommendation; before any session (no runtime
+        // recommendation): the live FOV saved by an earlier session, else 90 degrees.
+        static const char* const sources[] = {"live", "runtime recommendation", "saved by an earlier session",
+                                              "default, nothing known before tracking"};
+        int source = 3;
+        std::array<float, 2> fov{90.0f, 90.0f};
+        if (s.locatedFovValid) { source = 0; fov = s.locatedFovDegrees; }
+        else if (s.recommendedFovValid) { source = 1; fov = s.recommendedFovDegrees; }
+        else if (s.savedFovValid) { source = 2; fov = s.savedFovDegrees; }
+        if (source != s.loggedFovSource) {
+            s.loggedFovSource = source;
+            OVP_LOG("FOV properties: %.2f x %.2f degrees (%s)", fov[0], fov[1], sources[source]);
+        }
+        return fov[axis];
     }
     OVP_LOG("Unsupported float system property %d", property);
     return 0;

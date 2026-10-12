@@ -1,0 +1,291 @@
+---
+// The logo, told as a scene: a game goes into the portal on the PC's side (blue) as an APK file and arrives on the
+// Frame's side (orange) as something you can step into: an abstract VR world, or the file's pieces gathering into
+// the game's own shape (scripts/hero). The card is clipped at the tilted seam exactly as the logo cuts the monitor
+// and the headset; the Frame side is clipped to the other side of the same seam.
+// Stage units: 100 × 75 (aspect 4:3); portal centre (50, 37.5), tilted 18°, so the seam runs from x 62.18 at the
+// top to x 37.82 at the bottom.
+import { apkName, coverVars, initials } from '../scripts/cover';
+
+export interface CrossingGame { title: string; package: string; engine: string; xr: string }
+interface Props { games: CrossingGame[] }
+const { games } = Astro.props;
+const first = games[0];
+const sparks = Array.from({ length: 10 }, (_, i) => i);
+---
+<div class="stage" data-crossing style={coverVars(first.title)} role="button" tabindex="0"
+  aria-label="Send the next tested game through the portal">
+  <svg class="props" viewBox="0 0 100 75" aria-hidden="true">
+    <!-- the PC: the logo's monitor -->
+    <g class="pc" transform="translate(-6.5 1) scale(1.2)">
+      <path d="M9 15h27a3 3 0 0 1 3 3v20a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V18a3 3 0 0 1 3-3z" />
+      <path d="M22.5 41v6M15.5 47h14" />
+    </g>
+    <!-- the Frame: the logo's visor, seen until the game's world opens over it -->
+    <g class="hmd" transform="translate(33.6 3) scale(1.05)">
+      <path d="M30 31.5H32M56.5 31.5H58.5" />
+      <path d="M35.5 21h17.5a8 8 0 0 1 8 8v5a8 8 0 0 1-8 8H48.65a3 3 0 0 1-2.6-1.5l-1-1.7a.9.9 0 0 0-1.6 0l-1 1.7a3 3 0 0 1-2.6 1.5H35.5a8 8 0 0 1-8-8v-5a8 8 0 0 1 8-8z" />
+    </g>
+  </svg>
+
+  <!-- the Frame's side: drawn by three.js (scripts/hero), a CSS scene underneath until then or without WebGL -->
+  <div class="frame-side" data-frameside aria-hidden="true">
+    <div class="fs-fallback"><i class="fsky"></i><i class="ffloor"></i></div>
+  </div>
+
+  <div class="lane lane-pc" aria-hidden="true">
+    <div class="track">
+      <div class="card apk">
+        <div class="apk-head">
+          <span class="icon" data-f="initials">{initials(first.title)}</span>
+          <span class="apk-kind">Meta Quest<br /><b>APK</b></span>
+        </div>
+        <div class="apk-name" data-f="file">{apkName(first.package, first.title)}</div>
+        <div class="apk-meta"><span data-f="engine">{first.engine}</span> · <span data-f="xr">{first.xr}</span></div>
+        <ul class="tree">
+          <li>AndroidManifest.xml</li><li>lib/arm64-v8a/</li><li class="sub">libOVRPlugin.so</li><li>assets/</li><li>obb/</li>
+        </ul>
+        <div class="apk-work">
+          <span class="ticker"><span>scan</span><span>analyze</span><span>convert</span><span>patch</span><span>sign</span></span>
+          <span class="bar"><i></i></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <svg class="portal" viewBox="0 0 100 75" aria-hidden="true">
+    <defs>
+      <linearGradient id="rim" gradientUnits="userSpaceOnUse" x1="42" y1="0" x2="58" y2="0">
+        <stop offset=".3" stop-color="#3AA8FF" /><stop offset=".7" stop-color="#FF8A1F" />
+      </linearGradient>
+      <radialGradient id="hole" cx=".5" cy=".5" r=".5">
+        <stop offset="0" stop-color="#050608" /><stop offset=".8" stop-color="#08090c" /><stop offset="1" stop-color="#101218" />
+      </radialGradient>
+      <filter id="soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6" /></filter>
+    </defs>
+    <g transform="rotate(18 50 37.5)">
+      <ellipse class="glow" cx="50" cy="37.5" rx="8" ry="32" fill="none" stroke="url(#rim)" stroke-width="5" filter="url(#soft)" />
+      <ellipse cx="50" cy="37.5" rx="6.2" ry="31" fill="url(#hole)" />
+      <ellipse class="flash" cx="50" cy="37.5" rx="6.2" ry="31" fill="none" stroke="url(#rim)" stroke-width="3.2" />
+      <ellipse cx="50" cy="37.5" rx="6.2" ry="31" fill="none" stroke="url(#rim)" stroke-width="1.6" />
+    </g>
+  </svg>
+  <div class="sparks" aria-hidden="true">
+    {sparks.map((i) => <i style={`--i:${i}`}></i>)}
+  </div>
+  <p class="hint" aria-hidden="true">Click for the next game · drag the Frame side to look around</p>
+  <p class="caption">
+    <span class="mono" data-f="package">{first.package}</span>
+    <span class="arrow">→</span>
+    <span class="t" data-f="title">{first.title}</span>
+  </p>
+</div>
+
+<script type="application/json" data-crossing-games set:html={JSON.stringify(games).replaceAll('<', '\\u003c')} />
+
+<script>
+  import { apkName, coverVars, initials } from '../scripts/cover';
+  import { initFrameSide } from '../scripts/hero/frameside';
+  // A different catalog game crosses on every lap (swapped while the card is out of sight).
+  const stage = document.querySelector<HTMLElement>('[data-crossing]');
+  const data = document.querySelector('[data-crossing-games]');
+  if (stage && data) {
+    const games = JSON.parse(data.textContent || '[]') as { title: string; package: string; engine: string; xr: string }[];
+    let i = 0;
+    const fs = initFrameSide(stage, stage.querySelector<HTMLElement>('[data-frameside]')!, games[0].title);
+    const show = () => {
+      const g = games[i];
+      const values: Record<string, string> = {
+        title: g.title, package: g.package, engine: g.engine, xr: g.xr,
+        initials: initials(g.title), file: apkName(g.package, g.title),
+      };
+      for (const el of stage.querySelectorAll<HTMLElement>('[data-f]')) el.textContent = values[el.dataset.f!] ?? '';
+      stage.setAttribute('style', coverVars(g.title) + tiltVars);
+      fs.setGame(g.title);
+    };
+    stage.querySelector('.track')?.addEventListener('animationiteration', () => { i = (i + 1) % games.length; show(); });
+    // a click sends the next game: every lap animation starts again, the card already on the PC's side (a drag on
+    // the Frame side looks around instead)
+    const next = () => {
+      if (fs.dragged()) return;
+      i = (i + 1) % games.length;
+      show();
+      const lap = 9000;
+      for (const a of stage.getAnimations({ subtree: true })) {
+        const d = a.effect?.getTiming().duration;
+        if (d === lap) a.currentTime = lap * 0.1;
+      }
+    };
+    stage.addEventListener('click', next);
+    stage.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); next(); } });
+    // the scene leans a little toward the pointer
+    let tiltVars = '';
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches && matchMedia('(pointer: fine)').matches) {
+      stage.addEventListener('pointermove', (e) => {
+        const r = stage.getBoundingClientRect();
+        const x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+        tiltVars = `;--ry:${(x * 8).toFixed(2)}deg;--rx:${(-y * 6).toFixed(2)}deg`;
+        stage.style.setProperty('--ry', `${(x * 8).toFixed(2)}deg`);
+        stage.style.setProperty('--rx', `${(-y * 6).toFixed(2)}deg`);
+      });
+      stage.addEventListener('pointerleave', () => { tiltVars = ''; stage.style.setProperty('--ry', '0deg'); stage.style.setProperty('--rx', '0deg'); });
+    }
+  }
+</script>
+
+<style>
+  .stage {
+    --lap: 9s;
+    position: relative;
+    aspect-ratio: 4 / 3;
+    width: 100%;
+    container-type: inline-size;
+    perspective: 900px;
+    cursor: pointer;
+    transform: perspective(1400px) rotateY(var(--ry, 0deg)) rotateX(var(--rx, 0deg));
+    transition: transform 400ms var(--ease-out);
+  }
+  .stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 12px; }
+  .hint { position: absolute; left: 6%; right: 6%; top: 2%; z-index: 3; margin: 0; text-align: center; font: 500 12px/1.4 var(--font-mono);
+    color: var(--text-2); opacity: 0; transition: opacity 300ms; pointer-events: none; text-shadow: 0 1px 6px rgba(0, 0, 0, .8); }
+  .stage:hover .hint, .stage:focus-visible .hint { opacity: 1; }
+  /* the two sides' light, fading out well inside the stage so it has no edges */
+  .stage::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(closest-side, rgba(58, 168, 255, 0.13), transparent) 0 50% / 55% 90% no-repeat,
+      radial-gradient(closest-side, rgba(255, 138, 31, 0.12), transparent) 100% 50% / 55% 90% no-repeat; }
+  .props { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; stroke-width: 1.1;
+    stroke-linecap: round; stroke-linejoin: round; }
+  .props .pc { stroke: rgba(58, 168, 255, 0.22); }
+  .props .hmd { stroke: rgba(255, 138, 31, 0.22); }
+
+  /* the Frame's side: right of the seam (in its own box the seam runs from 39.18 % at the top to 0 at the bottom) */
+  .frame-side { position: absolute; top: 0; bottom: 0; left: 37.82%; width: 62.18%; touch-action: pan-y;
+    clip-path: polygon(39.18% 0, 100% 0, 100% 100%, 0 100%); cursor: grab;
+    -webkit-mask-image: radial-gradient(130% 100% at 70% 50%, #000 62%, transparent 100%);
+    mask-image: radial-gradient(130% 100% at 70% 50%, #000 62%, transparent 100%); }
+  .frame-side:active { cursor: grabbing; }
+  .frame-side :global(.fs-canvas) { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .fs-fallback { position: absolute; inset: 0; overflow: hidden; transition: opacity 600ms; perspective: 300px;
+    animation: fsopen var(--lap) infinite; }
+  .frame-side:global(.live) .fs-fallback { opacity: 0; animation: none; }
+  .fsky { position: absolute; inset: 0;
+    background: linear-gradient(180deg, hsl(var(--h) 55% 8%), hsl(var(--h2) 70% 34%) 58%, hsl(var(--h) 45% 5%) 58.5%); }
+  .ffloor { position: absolute; left: -60%; right: -60%; top: 58%; height: 90%; transform-origin: top; transform: rotateX(70deg);
+    background-image: linear-gradient(hsl(var(--h2) 90% 62% / .6) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--h) 85% 64% / .5) 1px, transparent 1px);
+    background-size: 5cqi 5cqi; }
+
+  .lane { position: absolute; inset: 0; transform-style: preserve-3d; pointer-events: none; }
+  .lane-pc { clip-path: polygon(-50% 0, 62.18% 0, 37.82% 100%, -50% 100%); }
+  .track { position: absolute; inset: 0; animation: lap var(--lap) infinite; will-change: transform, opacity; }
+
+  .card {
+    position: absolute; left: 5%; top: 21%; width: 30%; height: 56%;
+    border-radius: 2.2cqi; overflow: hidden;
+    display: flex; flex-direction: column;
+    animation: tilt var(--lap) infinite;
+  }
+  .icon {
+    width: 7.2cqi; height: 7.2cqi; flex: none; border-radius: 1.8cqi; display: grid; place-items: center;
+    font: 800 3cqi/1 var(--font-display); letter-spacing: -0.02em; color: #fff;
+    background:
+      radial-gradient(120% 90% at 20% 10%, hsl(var(--h2) 85% 70% / .65), transparent 60%),
+      linear-gradient(150deg, hsl(var(--h) 70% 52%), hsl(var(--h) 65% 26%));
+    box-shadow: 0 .6cqi 1.6cqi rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(255, 255, 255, .14);
+  }
+
+  /* the PC's side: a file being prepared */
+  .apk {
+    background: linear-gradient(180deg, #132131, var(--surface) 75%);
+    border: 1px solid var(--secondary-line);
+    padding: 2.4cqi;
+    gap: 1.4cqi;
+    clip-path: polygon(0 0, 80% 0, 100% 14%, 100% 100%, 0 100%);
+    font-family: var(--font-mono);
+  }
+  .apk::after { content: ""; position: absolute; right: 0; top: 0; width: 20%; height: 14%;
+    background: linear-gradient(225deg, transparent 50%, rgba(58, 168, 255, 0.4) 50%); }
+  .apk-head { display: flex; align-items: center; gap: 1.6cqi; }
+  .apk-kind { font-size: 1.7cqi; line-height: 1.3; letter-spacing: .1em; text-transform: uppercase; color: var(--text-2); }
+  .apk-kind b { color: var(--secondary); font-weight: 700; }
+  .apk-name { margin-top: 1cqi; color: var(--text); font-size: 2.15cqi; line-height: 1.3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .apk-meta { color: var(--text-2); font-size: 1.8cqi; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tree { list-style: none; margin: .6cqi 0 0; padding: 1cqi 0 0; border-top: 1px dashed rgba(58, 168, 255, .25);
+    display: grid; gap: .5cqi; font-size: 1.6cqi; line-height: 1.25; color: rgba(167, 171, 183, .7); }
+  .tree li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tree li::before { content: "▸ "; color: rgba(58, 168, 255, .55); }
+  .tree .sub { padding-left: 2cqi; }
+  .tree .sub::before { content: "· "; }
+  .apk-work { margin-top: auto; display: grid; gap: 1cqi; }
+  .ticker { position: relative; height: 2.2cqi; overflow: hidden; font-size: 1.8cqi; line-height: 2.2cqi; color: var(--secondary);
+    padding-left: 1.8cqi; }
+  .ticker span { display: block; animation: ticker var(--lap) infinite; }
+  .ticker::before { content: "›"; position: absolute; left: 0; top: 0; }
+  .bar { height: .8cqi; border-radius: 1cqi; background: rgba(58, 168, 255, 0.15); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 100%; background: var(--portal); transform-origin: left;
+    animation: fill var(--lap) infinite; }
+
+  .portal { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  .portal .glow { opacity: .35; animation: breathe 5.5s ease-in-out infinite; }
+  .portal .flash { opacity: 0; animation: flash var(--lap) infinite; }
+
+  /* sparks thrown off the rim while the card passes */
+  .sparks { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+  .sparks i { position: absolute; width: .9cqi; height: .9cqi; border-radius: 50%;
+    background: var(--c, var(--accent)); box-shadow: 0 0 1.2cqi var(--c, var(--accent)); opacity: 0;
+    --a: calc(var(--i) * 36deg + 8deg);
+    animation: spark var(--lap) infinite; animation-delay: calc(var(--i) * 18ms); }
+  .sparks i:nth-child(odd) { --c: var(--secondary); }
+
+  .caption { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; justify-content: center; align-items: baseline;
+    gap: 10px; margin: 0; font: 500 13px/1.4 var(--font-sans); color: var(--text-2); min-width: 0; pointer-events: none;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, .9); }
+  .caption { padding-inline: 4%; }
+  .caption .mono { flex: 0 1 auto; font-family: var(--font-mono); color: var(--secondary); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; min-width: 0; }
+  .caption .arrow { flex: none; }
+  .caption .t { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .caption .arrow { color: var(--text-3); }
+
+  /* one lap: arrive on the PC's side, get prepared, cross, the game opens on the Frame's side, the next one comes */
+  @keyframes lap {
+    0% { transform: translateX(-26%); opacity: 0; animation-timing-function: var(--ease-out); }
+    8% { transform: translateX(0); opacity: 1; }
+    30% { transform: translateX(0); opacity: 1; animation-timing-function: cubic-bezier(.62, 0, .3, 1); }
+    56% { transform: translateX(60%); opacity: 1; }
+    90% { transform: translateX(60%); opacity: 1; animation-timing-function: ease-in; }
+    98%, 100% { transform: translateX(68%); opacity: 0; }
+  }
+  @keyframes tilt {
+    0%, 30% { transform: rotateY(0) scale(1); }
+    40% { transform: rotateY(-16deg) scale(.96); }
+    46% { transform: rotateY(14deg) scale(.96); }
+    56%, 100% { transform: rotateY(0) scale(1); }
+  }
+  @keyframes ticker {
+    0%, 10% { transform: translateY(0); }
+    11%, 14% { transform: translateY(-100%); }
+    15%, 18% { transform: translateY(-200%); }
+    19%, 22% { transform: translateY(-300%); }
+    23%, 100% { transform: translateY(-400%); }
+  }
+  @keyframes fill { 0%, 8% { transform: scaleX(0); } 28%, 100% { transform: scaleX(1); } }
+  @keyframes flash { 0%, 36% { opacity: 0; } 42% { opacity: 1; } 54%, 100% { opacity: 0; } }
+  @keyframes spark {
+    0%, 38% { opacity: 0; transform: rotate(var(--a)) translateX(4cqi) scale(1); }
+    40% { opacity: 1; }
+    52% { opacity: 0; transform: rotate(var(--a)) translateX(17cqi) scale(.4); }
+    100% { opacity: 0; transform: rotate(var(--a)) translateX(17cqi) scale(.4); }
+  }
+  @keyframes breathe { 0%, 100% { opacity: .28; } 50% { opacity: .5; } }
+  @keyframes fsopen { 0%, 34% { opacity: 0; } 56%, 90% { opacity: 1; } 98%, 100% { opacity: 0; } }
+
+  /* reduced motion: the logo's own moment, the card halfway through, the game's world already open */
+  @media (prefers-reduced-motion: reduce) {
+    .track { animation: none; transform: translateX(31%); opacity: 1; }
+    .card, .ticker span, .bar i, .sparks i, .portal .glow, .portal .flash, .fs-fallback { animation: none; }
+    .ticker span { transform: translateY(-300%); }
+  }
+</style>

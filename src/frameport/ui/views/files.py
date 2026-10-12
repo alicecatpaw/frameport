@@ -23,7 +23,7 @@ from .files_dialog import human
 if TYPE_CHECKING:
     from ..app import FramePortApp
 
-SHARED_ICONS = {"videos": ft.Icons.MOVIE_OUTLINED, "downloads": ft.Icons.DOWNLOAD_OUTLINED,
+SHARED_ICONS = {"videos": ft.Icons.MOVIE_OUTLINED, "downloads": ft.Icons.DOWNLOAD_ROUNDED,
                 "documents": ft.Icons.DESCRIPTION_OUTLINED}
 VIDEO_EXT = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
@@ -47,7 +47,7 @@ def dropzone_available() -> bool:
 
 def file_icon(name: str, is_dir: bool) -> str:
     if is_dir:
-        return ft.Icons.FOLDER_ROUNDED
+        return ft.Icons.FOLDER_OUTLINED
     ext = Path(name).suffix.lower()
     if ext in VIDEO_EXT:
         return ft.Icons.MOVIE_OUTLINED
@@ -84,21 +84,24 @@ class FilesView:
         self.listing = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         self.status = C.meta("")
         self.toolbar = ft.Row([
-            C.primary(tr("Upload files"), ft.Icons.UPLOAD_FILE_ROUNDED, self.upload_files),
-            C.secondary(tr("Upload folder"), ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED, self.upload_folder),
-            C.ghost(tr("New folder"), ft.Icons.CREATE_NEW_FOLDER_OUTLINED, lambda e: self.new_folder()),
+            C.primary(tr("Upload files…"), ft.Icons.UPLOAD_FILE_OUTLINED, self.upload_files),
+            C.secondary(tr("Upload folder…"), ft.Icons.DRIVE_FOLDER_UPLOAD_OUTLINED, self.upload_folder),
+            C.ghost(tr("New folder…"), ft.Icons.CREATE_NEW_FOLDER_OUTLINED, lambda e: self.new_folder()),
             C.icon_btn(ft.Icons.REFRESH_ROUNDED, tr("Refresh"), lambda e: self.load()),
         ], spacing=T.S2, wrap=True, run_spacing=T.S2)
         self.hidden_switch = C.switch(tr("Show hidden files"), wrap=False, value=False, on_change=self._toggle_hidden)
         self.selected: set[str] = set()  # paths of checked entries in the current folder
         self.checks: dict[str, ft.Checkbox] = {}
+        self.rows: dict[str, tuple] = {}  # path → (row, quiet checkbox, quiet actions)
+        self.hot: set[str] = set()  # rows under the mouse or with keyboard focus inside
+        self._select_mode = False
         self.select_all = ft.Checkbox(value=False, active_color=T.ACCENT, check_color=T.ON_ACCENT,
                                       tooltip=tr("Select all"), on_change=self._toggle_all)
         self.sel_label = C.body("", T.TEXT, weight=ft.FontWeight.W_500)
         self.sel_bar = ft.Container(ft.Row([
             self.sel_label, ft.Container(expand=True),
-            C.secondary(tr("Download"), ft.Icons.DOWNLOAD_ROUNDED, self._download_selected),
-            C.ghost(tr("Delete"), ft.Icons.DELETE_OUTLINE_ROUNDED, lambda e: self._delete_selected()),
+            C.secondary(tr("Download…"), ft.Icons.DOWNLOAD_ROUNDED, self._download_selected),
+            C.ghost(tr("Delete…"), ft.Icons.DELETE_OUTLINE_ROUNDED, lambda e: self._delete_selected()),
             C.ghost(tr("Clear"), ft.Icons.CLOSE_ROUNDED, lambda e: self._clear_selection()),
         ], spacing=T.S2), padding=ft.Padding(T.S3, T.px(6), T.S2, T.px(6)), border_radius=T.RADIUS_SM,
             bgcolor=T.ACCENT_SOFT, visible=False)
@@ -124,9 +127,18 @@ class FilesView:
         if not (app.target and app.frame_state == "connected"):
             return ft.Column([
                 app.top_bar(tr("Files"), tr("Videos, documents, mods and saves on your Steam Frame")),
-                C.empty_state(ft.Icons.FOLDER_OFF_OUTLINED, tr("Connect your Frame first"),
-                              tr("Files on the Frame can be browsed once FramePort is connected to it."),
-                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")))], expand=True)
+                C.empty_state(ft.Icons.FOLDER_OPEN_ROUNDED, tr("Your Frame's files, from this PC"),
+                              tr("Connect to your Steam Frame to browse its videos, downloads and each game's "
+                                 "storage."),
+                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")),
+                              features=[
+                                  (ft.Icons.VIDEO_LIBRARY_OUTLINED, tr("Videos for your players"),
+                                   tr("Upload movies straight into a player's own folder.")),
+                                  (ft.Icons.SAVE_ROUNDED, tr("Game storage and saves"),
+                                   tr("Browse each installed game's files and download your saves.")),
+                                  (ft.Icons.DRIVE_FOLDER_UPLOAD_OUTLINED, tr("Files and whole folders"),
+                                   tr("Upload from this PC, download, rename and tidy up.")),
+                              ])], expand=True)
         if self.root is None:
             self.root = ft.Column([
                 app.top_bar(tr("Files"), tr("Videos, documents, mods and saves on your Steam Frame")),
@@ -175,12 +187,14 @@ class FilesView:
 
     def _location_row(self, loc: dict, icon: str, sub: str = "") -> ft.Control:
         selected = self.loc is not None and self.loc["id"] == loc["id"]
-        return ft.Container(
-            ft.Row([ft.Icon(icon, size=T.px(18), color=T.ACCENT if selected else T.TEXT_2),
-                    ft.Column([C.body(loc["label"], T.TEXT if selected else T.TEXT_2, weight=ft.FontWeight.W_500),
-                               *([C.meta(sub)] if sub else [])], spacing=0, expand=True)], spacing=T.S2),
+        ic = ft.Icon(icon, size=T.px(18))
+        label = C.body(loc["label"], weight=ft.FontWeight.W_500)
+        box = ft.Container(
+            ft.Row([ic, ft.Column([label, *([C.meta(sub)] if sub else [])], spacing=0, expand=True)], spacing=T.S2),
             padding=ft.Padding(T.S2, T.px(6), T.S2, T.px(6)), border_radius=T.RADIUS_SM, ink=True,
-            bgcolor=T.ACCENT_SOFT if selected else None, on_click=lambda e, loc_=loc: self.open_location(loc_))
+            on_click=lambda e, loc_=loc: self.open_location(loc_))
+        C.selected_style(box, selected, ic, label)  # like the sidebar: the portal fade with a white icon
+        return box
 
     def _render_locations(self) -> None:
         rows = [self._location_row(loc_, SHARED_ICONS.get(loc_["id"], ft.Icons.FOLDER_OUTLINED), loc_["android"])
@@ -279,16 +293,15 @@ class FilesView:
         for i, (label, p) in enumerate(crumbs(loc["path"], self.path, loc["label"])):
             if i:
                 self.crumb_row.controls.append(ft.Icon(ft.Icons.CHEVRON_RIGHT_ROUNDED, size=T.px(16), color=T.TEXT_3))
-            self.crumb_row.controls.append(ft.TextButton(label, on_click=lambda e, p=p: self.cd(p),
-                                                         style=ft.ButtonStyle(color=T.TEXT if p == self.path
-                                                                              else T.TEXT_2)))
+            self.crumb_row.controls.append(C.ghost(label, on_click=lambda e, p=p: self.cd(p),
+                                                   color=T.TEXT if p == self.path else T.TEXT_2))
         android = loc.get("android")
         rel = posixpath.relpath(self.path, loc["path"]) if self.path != loc["path"] else ""
         self.where.value = (tr("Games see this folder as {value}")
                             .format(value=posixpath.join(android, rel) if rel else android)
                             if android else self.path)
         rows = []
-        self.checks = {}
+        self.checks, self.rows, self.hot = {}, {}, set()
         if self.path != loc["path"]:
             rows.append(self._row(None))
         rows += [self._row(e) for e in self.entries]
@@ -311,27 +324,34 @@ class FilesView:
                                 padding=ft.Padding(T.S3, T.px(8), T.S3, T.px(8)), border_radius=T.RADIUS_SM, ink=True,
                                 on_click=lambda ev: self.cd(posixpath.dirname(self.path)))
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(e.mtime)) if e.mtime else ""
-        info = (("folder" if e.is_dir else human(e.size)) + (tr(" · link") if e.link else "")
+        info = ((tr("folder") if e.is_dir else human(e.size)) + (tr(" · link") if e.link else "")
                 + (f" · {when}" if when else ""))
-        actions = [C.icon_btn(ft.Icons.DOWNLOAD_ROUNDED, tr("Download to this PC"),
+        actions = [C.icon_btn(ft.Icons.DOWNLOAD_ROUNDED, tr("Download to this PC…"),
                               lambda ev, x=e: self._download_later([x]))]
         if not self._protected(e):
-            actions += [C.icon_btn(ft.Icons.DRIVE_FILE_RENAME_OUTLINE_ROUNDED, tr("Rename"),
+            actions += [C.icon_btn(ft.Icons.DRIVE_FILE_RENAME_OUTLINE_OUTLINED, tr("Rename…"),
                                    lambda ev, x=e: self.rename(x)),
-                        C.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, tr("Delete"), lambda ev, x=e: self.delete([x]))]
+                        C.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, tr("Delete…"), lambda ev, x=e: self.delete([x]))]
         check = ft.Checkbox(value=e.path in self.selected, active_color=T.ACCENT, check_color=T.ON_ACCENT,
                             on_change=lambda ev, p=e.path: self._toggle(p, ev.control.value),
                             disabled=self._protected(e))
         self.checks[e.path] = check
+        # quiet rows: the checkbox and the actions show on hover, keyboard focus or when something is selected
+        for c in (check, *actions):
+            c.on_focus = lambda ev, p=e.path: self._focus(p, True)
+            c.on_blur = lambda ev, p=e.path: self._focus(p, False)
+        quiet_check, quiet_actions = C.quiet(check), C.quiet(*actions)
         row = ft.Container(
-            ft.Row([check,
+            ft.Row([quiet_check,
                     ft.Icon(file_icon(e.name, e.is_dir), size=T.px(20), color=T.ACCENT if e.is_dir else T.TEXT_2),
                     ft.Column([C.body(e.name, T.TEXT, weight=ft.FontWeight.W_500, max_lines=1,
                                       overflow=ft.TextOverflow.ELLIPSIS), C.meta(info)], spacing=0, expand=True),
-                    *actions], spacing=T.S3),
+                    quiet_actions], spacing=T.S3),
             padding=ft.Padding(T.S3, T.px(6), T.S2, T.px(6)), border_radius=T.RADIUS_SM, ink=e.is_dir,
             on_click=(lambda ev, p=e.path: self.cd(p)) if e.is_dir else None,
-            on_hover=lambda ev, p=e.path: self.drag.hover(p, ev.data in (True, "true")))
+            on_hover=lambda ev, p=e.path: self._hover(p, ev.data in (True, "true")))
+        self.rows[e.path] = (row, quiet_check, quiet_actions)
+        self._paint_row(e.path)
         return ft.GestureDetector(content=row, on_secondary_tap_down=lambda ev, x=e: self.open_menu(x,
                                                                                                     ev.global_position))
 
@@ -340,8 +360,8 @@ class FilesView:
         """[(label, icon, handler) | None] for a right-click on entry `e` (None = on the folder's empty space). With
         several entries selected and `e` among them, the actions act on the whole selection."""
         if e is None:
-            return [(tr("Upload files…"), ft.Icons.UPLOAD_FILE_ROUNDED, self.upload_files),
-                    (tr("Upload folder…"), ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED, self.upload_folder),
+            return [(tr("Upload files…"), ft.Icons.UPLOAD_FILE_OUTLINED, self.upload_files),
+                    (tr("Upload folder…"), ft.Icons.DRIVE_FOLDER_UPLOAD_OUTLINED, self.upload_folder),
                     (tr("New folder…"), ft.Icons.CREATE_NEW_FOLDER_OUTLINED, lambda ev: self.new_folder()),
                     None,
                     *([(tr("Select all"), ft.Icons.SELECT_ALL_ROUNDED, lambda ev: self._select_all())]
@@ -360,7 +380,7 @@ class FilesView:
                     else tr("Download to this PC…"), ft.Icons.DOWNLOAD_ROUNDED,
                     lambda ev: self._download_later(items)))
         if not several and not self._protected(e):
-            out.append((tr("Rename…"), ft.Icons.DRIVE_FILE_RENAME_OUTLINE_ROUNDED, lambda ev: self.rename(e)))
+            out.append((tr("Rename…"), ft.Icons.DRIVE_FILE_RENAME_OUTLINE_OUTLINED, lambda ev: self.rename(e)))
         if not several:
             out.append((tr("Copy path"), ft.Icons.CONTENT_COPY_ROUNDED, lambda ev: self.app.copy(self._shown_path(
                 e.path))))
@@ -408,7 +428,34 @@ class FilesView:
         if check is not None and check.value != on:
             check.value = on
             C.update(check)
+        if self._paint_row(path):
+            C.update(self.rows[path][0])
         self._update_selection()
+
+    # ---------------------------------------------------------------- quiet rows
+    def _hover(self, path: str, inside: bool) -> None:
+        self.drag.hover(path, inside)
+        self._set_hot(path, inside)
+
+    def _focus(self, path: str, on: bool) -> None:
+        self._set_hot(path, on)
+
+    def _set_hot(self, path: str, on: bool) -> None:
+        (self.hot.add if on else self.hot.discard)(path)
+        if path in self.rows and self._paint_row(path):
+            C.update(self.rows[path][0])
+
+    def _paint_row(self, path: str) -> bool:
+        """Properties only: the selected look and whether the checkbox/actions show. True when something changed."""
+        row, quiet_check, quiet_actions = self.rows[path]
+        on = path in self.selected
+        before = (row.bgcolor, row.gradient is not None)
+        C.selected_style(row, on)
+        changed = before != (row.bgcolor, row.gradient is not None)
+        show = on or path in self.hot or bool(self.selected)
+        changed |= C.reveal(quiet_check, show)
+        changed |= C.reveal(quiet_actions, on or path in self.hot)
+        return changed
 
     def _toggle_all(self, e) -> None:
         self.selected = {x.path for x in self.entries if self._selectable(x)} if e.control.value else set()
@@ -435,6 +482,11 @@ class FilesView:
         self.sel_label.value = (tr("{n} selected").format(n=n)
                                 + (tr(" · {human} in files").format(human=human(size)) if size else ""))
         self.sel_bar.visible = bool(n)
+        if bool(n) != self._select_mode:  # select mode starts/ends: every row's checkbox shows/hides
+            self._select_mode = bool(n)
+            changed = [path for path in self.rows if self._paint_row(path)]
+            if render and changed:
+                C.update(self.listing)
         self.select_all.value = bool(self.entries) and n == len([x for x in self.entries if self._selectable(x)])
         if render:
             for c in (self.sel_bar, self.select_all):
@@ -509,7 +561,7 @@ class FilesView:
 
     def delete(self, items: list) -> None:
         names = ", ".join(x.name for x in items[:3]) + (" …" if len(items) > 3 else "")
-        what = tr("folder and everything in it") if any(x.is_dir for x in items) else "file"
+        what = tr("folder and everything in it") if any(x.is_dir for x in items) else tr("file")
         C.confirm(self.app.page, tr("Delete {names}?").format(names=names),
                   tr("This deletes the {what} on the Frame. It can't be undone.").format(what=what),
                   tr("Delete"), lambda: (self.selected.difference_update(x.path for x in items),
@@ -531,14 +583,12 @@ class FilesView:
 
     def _ask_name(self, heading: str, label: str, value: str, ok: str, on_ok) -> None:
         page = self.app.page
-        field = ft.TextField(label=label, value=value, autofocus=True, width=T.px(380))
+        field = C.field(label=label, value=value, autofocus=True, width=T.DIALOG_S)
 
         def go(e=None):
             page.pop_dialog()
             if (field.value or "").strip():
                 on_ok(field.value.strip())
         field.on_submit = go
-        page.show_dialog(ft.AlertDialog(title=ft.Text(heading, color=T.TEXT, weight=ft.FontWeight.W_600),
-                                        bgcolor=T.SURFACE_2, content=field,
-                                        actions=[C.ghost(tr("Cancel"), on_click=lambda e: page.pop_dialog()),
-                                                 C.primary(ok, on_click=go)]))
+        page.show_dialog(C.dialog(heading, field, [C.ghost(tr("Cancel"), on_click=lambda e: page.pop_dialog()),
+                                                   C.primary(ok, on_click=go)], size="s"))

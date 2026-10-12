@@ -1,5 +1,5 @@
 name: catalog-from-issue
-# A maintainer adds the label `catalog-accepted` to a "Working configuration" issue → this opens a PR adding the
+# A maintainer adds the label `catalog-accepted` to a "Working recipe" issue → this opens a PR adding the
 # recipe to catalog/games/. Never runs for unlabelled issues; the issue text is only read by the validating script
 # (never interpolated into shell commands). Needs Settings → Actions → "Allow GitHub Actions to create pull requests".
 on:
@@ -40,7 +40,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add "catalog/games/$PKG.yaml"
+          uv run python scripts/patch_docs.py  # docs/PATCHES.md lists the catalog games per patch
+          git add "catalog/games/$PKG.yaml" docs/PATCHES.md site/src/data/patches.json
           git commit -m "catalog: $PKG (from #$ISSUE)"
           git push --force origin "$branch"
           if ! gh pr view "$branch" >/dev/null 2>&1; then

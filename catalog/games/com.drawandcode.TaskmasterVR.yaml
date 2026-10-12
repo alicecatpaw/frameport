@@ -1,0 +1,24 @@
+package: com.drawandcode.TaskmasterVR
+title: Taskmaster
+status: works
+notes: Launched and played a few tasks. Seems to work pretty much flawlessly other than some occasionally finicky
+  grip detection - very possible that this is just the game itself though
+tested_version: 1.0.17557.29562
+engine: Unity
+xr: OpenXR
+frame:
+- frame.unity_text_input
+- frame.oculusos
+device:
+- device.text_input_window
+adapter:
+  haptic_fix: 1
+verified:
+  date: '2026-10-11'
+  known_good_sha256: e3b3c49d77284afb76e9f960828cbfaa4250d66c11b7fd9e4053d489aca662ae
+  app: 1.0.0
+  overport_cli: 1.2.5
+  frame_build: '20261007.6125817'
+  agent: 78
+  issue: 183
+source_hint: Taskmaster VR

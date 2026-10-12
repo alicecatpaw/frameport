@@ -17,9 +17,22 @@ import time
 import traceback
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import flet as ft  # noqa: E402
+from showcase.fakes import (  # noqa: E402,F401
+    LINUX_APPIMAGE,
+    LINUX_FOLDER,
+    add_fake_linux_apps,
+    attach_fake_frame,
+    fake_live_stream,
+    install_fakes,
+    open_monitor_details,
+    open_type_tab,
+    start_fake_install,
+    stop_fake_live,
+)
 
 from frameport.core import library  # noqa: E402
 from frameport.ui.app import FramePortApp  # noqa: E402
@@ -28,339 +41,25 @@ PORT = int(os.environ.get("FRAMEPORT_SMOKE_PORT", "8557"))  # two smoke runs at 
 ERRORS: list[str] = []
 
 
-class FakeFS:
-    """--fake-frame's file system for the Files tab: a temp folder with sample files, served like SFTP."""
-
-    def __init__(self):
-        import tempfile
-
-        self.home = tempfile.mkdtemp(prefix="fp-fake-frame-")
-        samples = {"Videos": ["Earth from orbit (360).mp4", "Mars landing (VR180).mkv", "Concert 8K 3D.mp4"],
-                   "Downloads": ["Mods/", "readme.txt"], "Documents": ["Saves/", "Notes.pdf"]}
-        sizes = {".mp4": 2_400_000_000, ".mkv": 1_100_000_000}
-        for folder, names in samples.items():
-            base = os.path.join(self.home, folder)
-            os.makedirs(os.path.join(base, "Trips"), exist_ok=True)
-            for n in names:
-                if n.endswith("/"):
-                    os.makedirs(os.path.join(base, n), exist_ok=True)
-                else:
-                    with open(os.path.join(base, n), "wb") as f:
-                        f.truncate(sizes.get(os.path.splitext(n)[1], 48_000))  # sparse: no real disk use
-        self.shots = self._screenshots()
-
-    def _screenshots(self) -> list[dict]:
-        """Sample Steam screenshots for the Screenshots tab, two days, a few games + SteamVR: crops of the games' own
-        store art (hero/landscape) when the library has some (docs screenshots), else colour gradients."""
-        from PIL import Image, ImageOps
-
-        from frameport.artwork import fetch
-
-        folder = os.path.join(self.home, "shots")
-        os.makedirs(folder, exist_ok=True)
-        games = []
-        for g in library.games():
-            if g.get("kind") == "rift":
-                continue
-            # the store's own screenshots look like real captures; else hero/wide art
-            shots_art = sorted(fetch.artwork_dir(g["package"]).glob("shot_*.jpg"))
-            games.append((g, shots_art or [p for p in fetch.files(g["package"]) if p.stem in ("hero", "landscape")],
-                          bool(shots_art)))
-        games.sort(key=lambda ga: (not ga[2], -len(ga[1])))
-        owners = [(g["package"], g.get("title") or g["package"], arts) for g, arts, _real in games[:3]]
-        spare = games[3][1] if len(games) > 3 else []  # SteamVR's own shots (taken outside a FramePort game)
-        owners.append((None, "SteamVR", spare))
-        now, shots = time.time(), []
-        for i in range(10):
-            t = now - i * 2400 - (86400 if i >= 6 else 0)
-            name = time.strftime("%Y%m%d%H%M%S", time.localtime(t)) + "_1.jpg"
-            path = os.path.join(folder, name)
-            pkg, title, arts = owners[i % len(owners)]
-            if arts:  # a different crop of the game's art per shot, so they don't all look alike
-                with Image.open(arts[i % len(arts)]) as src:
-                    src = src.convert("RGB")
-                    zoom = 1.0 + 0.15 * (i % 3) * (src.width < 2 * src.height)
-                    w, h = int(src.width / zoom), int(src.height / zoom)
-                    x, y = (src.width - w) * (i % 2), (src.height - h) // 2
-                    im = ImageOps.fit(src.crop((x, y, x + w, y + h)), (1280, 720))
-            else:
-                im = Image.linear_gradient("L").resize((640, 360)).convert("RGB")
-                im = Image.merge("RGB", (im.getchannel(0).point(lambda v, i=i: (v + 40 * i) % 256),
-                                         im.getchannel(1).point(lambda v: 255 - v), im.getchannel(2)))
-            im.save(path, "JPEG", quality=85)
-            shots.append({"path": path, "thumb": None, "time": int(t), "width": 1920, "height": 1080,
-                          "size": os.path.getsize(path), "account": "1", "appid": "250820", "package": pkg,
-                          "title": title})
-        return shots
-
-    def agent(self, command, **args):
-        if command == "storage_targets":
-            return {"targets": [{"id": n.lower(), "path": os.path.join(self.home, n), "android": a, "shared": True}
-                                for n, a in (("Videos", "/sdcard/Movies"), ("Downloads", "/sdcard/Download"),
-                                             ("Documents", "/sdcard/Documents"))]}
-        if command == "list_screenshots":
-            want = args.get("package")
-            shots = [s for s in self.shots if want is None or (s["package"] or "") == want]
-            games = {}
-            for s in self.shots:
-                games.setdefault(s["package"] or "", {"package": s["package"], "title": s["title"], "count": 0})
-                games[s["package"] or ""]["count"] += 1
-            return {"shots": shots, "total": len(shots), "games": list(games.values())}
-        raise RuntimeError(f"fake Frame: {command} not available")
-
-    @property
-    def sftp(self):
-        import paramiko
-
-        class SFTP:
-            def listdir_attr(self, path):
-                out = []
-                for name in sorted(os.listdir(path)):
-                    a = paramiko.SFTPAttributes.from_stat(os.lstat(os.path.join(path, name)))
-                    a.filename = name
-                    out.append(a)
-                return out
-
-            def stat(self, path):
-                return paramiko.SFTPAttributes.from_stat(os.stat(path))
-
-            def get(self, remote, local, callback=None):
-                import shutil
-
-                shutil.copyfile(remote, local)
-        return SFTP()
+PAINT_SECONDS = 3  # after a step, before its screenshot: Flutter paints (and a view's content loads)
+STEP_TIMEOUT = 240  # the longest a step may wait for its screenshot (a crashed browser mustn't hang the run)
 
 
-class FakeTarget:
-    """--fake-frame: a pretend Steam Frame with the library's working Quest builds installed (no network, no device),
-    for documentation screenshots."""
-
-    def __init__(self, count: int = 8):
-        from frameport.frame.connection import parse_target
-
-        self.label = "steamframe"
-        self.frame = FakeFS()
-        self.target = parse_target("steamos@steamframe.local")
-        works = [g for g in library.games() if g.get("kind") != "rift" and (g.get("build") or {}).get("sha256")
-                 and (g.get("recipe") or {}).get("status") in ("works", "issues")]
-        works.sort(key=lambda g: -(g.get("data_bytes") or 0))
-        self.games = [{"package": g["package"], "kind": "quest", "title": g.get("title"),
-                       "apk_size": (g.get("data_bytes") or 0) + 2**28, "sha256": g["build"]["sha256"],
-                       "recipe": {"patches": (g.get("recipe") or {}).get("patches", [])}} for g in works[:count]]
-        # --linux: the AppImage is on the Frame, but SteamOS lacks one of its libraries
-        self.games += [{"package": g["package"], "kind": "linux", "title": g.get("title"), "apk_size": 2**26,
-                        "apk_present": True, "recipe": None, "exe": g.get("exe"),
-                        "missing_libraries": ["libwebkit2gtk-4.1.so.0"]}
-                       for g in library.games() if g.get("kind") == "linux" and g["package"] == LINUX_APPIMAGE]
-        # GitHub #90: most games on internal storage, the second one on a microSD card
-        sd = {"internal": False, "path": "/run/media/steamos/SD Card", "label": "SD Card"}
-        for i, g in enumerate(self.games):
-            g["drive"] = sd if i == 1 else {"internal": True, "path": "/home/steamos", "label": "Internal storage"}
-            g["drive_missing"] = False
-
-    def drives(self) -> list[dict]:
-        sd_games = sum(1 for g in self.games if not g["drive"]["internal"])
-        return [{"id": "internal", "path": "/home/steamos", "install_dir": "/home/steamos/Applications/quest-frame",
-                 "label": "Internal storage", "fstype": "ext4", "internal": True, "removable": False,
-                 "free_bytes": 312 * 2**30, "total_bytes": 460 * 2**30, "usable": True, "reason": "",
-                 "games": len(self.games) - sd_games},
-                {"id": "/run/media/steamos/SD Card", "path": "/run/media/steamos/SD Card",
-                 "install_dir": "/run/media/steamos/SD Card/FramePort", "label": "SD Card", "fstype": "ext4",
-                 "internal": False, "removable": True, "free_bytes": 187 * 2**30, "total_bytes": 238 * 2**30,
-                 "usable": True, "reason": "", "games": sd_games},
-                {"id": "/run/media/steamos/USB", "path": "/run/media/steamos/USB", "install_dir":
-                 "/run/media/steamos/USB/FramePort", "label": "USB", "fstype": "exfat", "internal": False,
-                 "removable": True, "free_bytes": 50 * 2**30, "total_bytes": 64 * 2**30, "usable": False,
-                 "reason": "exfat can't hold game data (no Unix permissions or symlinks); format the drive in "
-                           "SteamOS to install games on it", "games": 0}]
-
-    def move(self, package, dest, reporter) -> dict:
-        reporter.stage("Move game files")
-        for i in range(5):
-            reporter.progress(i / 4, f"Copying {i / 2:.1f}/2.0 GiB")
-            time.sleep(0.5)
-        return {"state": "done", "package": package}
-
-    def set_desktop_entry(self, package, enabled) -> dict:
-        for g in self.games:
-            if g["package"] == package:
-                g["desktop_entry"] = enabled
-        return {"enabled": enabled}
-
-    def describe(self) -> dict:
-        return {"hostname": "steamframe", "os": "SteamOS", "os_version": "3.8", "build_id": "20260922",
-                "free_bytes": 312 * 2**30, "installed": self.games, "lepton": True,
-                "proton": {"ready": {"display_name": "Proton 11 (ARM64)"}, "openxr": {"name": "SteamVR"}},
-                "kernel_keys": {"keys": 31, "max_keys": 200}}
-
-    def installed(self) -> list[dict]:
-        return self.games
-
-    def close(self) -> None:
-        pass
-
-
-class FakeKeyboardSession:
-    """--fake-frame: Type on Frame connects at once (nothing is sent anywhere)."""
-
-    def __init__(self, frame):
-        self.closed = False
-
-    def key(self, name, action="down"):
-        return True
-
-    def text(self, text):
-        return ""
-
-    def close(self):
-        self.closed = True
-
-
-class FakeMonitorSession:
-    """--fake-frame: the Monitor tab's stream as synthetic samples, one per second, shaped like a real Quest game on
-    the dev Frame (2026-10-07): 72 fps, the game's Android container, SteamVR/Steam as context. Two minutes are sent
-    at once first, so the charts are full in screenshots. GAME = --game (else the library's first game)."""
-
-    GAME: str | None = None
-    BACKFILL = 120
-    # (name, group, CPU %, GPU %, memory); "GAME" = the game's package
-    PROCS = [("GAME", "game", 9.8, 44.0, 1_350_000_000), ("vrcompositor", "steamvr", 1.4, 9.0, 80_000_000),
-             ("system_server", "game", 1.1, 0.0, 296_000_000), ("XRServiceLoopTh", "steamvr", 0.5, 0.0, 433_000_000),
-             ("steamwebhelper", "steam", 0.4, 0.0, 350_000_000), ("com.android.systemui", "game", 0.1, 0.0,
-                                                                   229_000_000),
-             ("surfaceflinger", "game", 0.1, 0.4, 96_000_000), ("audioserver", "game", 0.1, 0.0, 31_000_000),
-             ("com.android.providers.media.module", "game", 0.1, 0.0, 130_000_000),
-             ("com.android.launcher3", "game", 0.0, 0.0, 194_000_000), ("main", "game", 0.0, 0.0, 178_000_000),
-             ("com.android.settings", "game", 0.0, 0.0, 172_000_000),
-             ("com.android.networkstack.process", "game", 0.0, 0.0, 130_000_000),
-             ("android.ext.services", "game", 0.0, 0.0, 111_000_000)] + \
-            [("vrwebhelper", "steamvr", 0.3, 0.0, 160_000_000 + i * 9_000_000) for i in range(4)]
-
-    def __init__(self, frame, on_sample, on_end=None):
-        import math
-
-        self.math, self.closed, self.on_sample = math, False, on_sample
-        self.static = {"agent": 62, "cores": 8, "gpu_max_mhz": 903, "mem_total": 16 * 1024 ** 3, "fan": True,
-                       "clusters": [{"cpus": [0, 1], "max_mhz": 2265}, {"cpus": [2, 3, 4], "max_mhz": 3148},
-                                    {"cpus": [5, 6], "max_mhz": 2956}, {"cpus": [7], "max_mhz": 3052}],
-                       "temp_groups": ["CPU", "GPU", "Memory", "Battery", "NPU", "Power ICs", "Modem", "Camera"]}
-        self.t = 0
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def _sample(self) -> dict:
-        m, t = self.math, self.t
-        wave = lambda a, p, o=0: a * (1 + m.sin(t / p + o)) / 2  # noqa: E731
-        g = library.game(self.GAME) if self.GAME else (library.games() or [None])[0]
-        game = g or {"package": "com.example.game", "title": "Example Game"}
-        pkg = game["package"]
-        procs = [{"pid": 570799 + i * 37, "ppid": 1, "name": pkg if n == "GAME" else n,
-                  "group": f"game:{pkg}" if grp == "game" else grp, "game": pkg if grp == "game" else None,
-                  "cpu": round(c * (0.85 + wave(0.3, 3, i)), 1), "gpu": round(gp * (0.9 + wave(0.2, 5, i)), 1),
-                  "rss": r, "age": 1500 + t, "uid": 1000, "critical": grp in ("steamvr", "steam"), "locked": False,
-                  "context": grp != "game"}
-                 for i, (n, grp, c, gp, r) in enumerate(self.PROCS)]
-        return {
-            "t": time.time() - max(0, self.BACKFILL - t), "dt": 1.0, "self_ms": 11.5,
-            "cpu": {"total": round(15 + wave(4, 4), 1), "cores": [round(4 + wave(30, 3 + i, i), 1) for i in range(8)],
-                    "mhz": [2265, 1996, 1920, 518]},
-            "gpu": {"busy": round(52 + wave(8, 5), 1), "mhz": 903},
-            "mem": {"total": 15.3 * 1024 ** 3, "avail": int((8.3 - wave(0.15, 9)) * 1024 ** 3),
-                    "swap_total": 7.6 * 1024 ** 3, "swap_free": 7.4 * 1024 ** 3},
-            "psi": {"cpu": 1.0, "memory": 0.0, "io": 0.1},
-            "temps": {"CPU": round(48 + wave(1.5, 11), 1), "GPU": round(46.5 + wave(1, 13), 1), "Memory": 47.1,
-                      "Battery": 27.7, "NPU": 47.3, "Power ICs": 37.0, "Modem": 44.2, "Camera": 46.3},
-            "zones": {"CPU": {"cpu7-top": 48.4, "cpu0": 44.0}, "GPU": {"gpuss-0": 46.5}},
-            "fan": 8500 + int(wave(300, 7)),
-            "power": {"system": round(7.3 + wave(0.6, 4), 2), "cpu": 0.85, "gpu": round(1.0 + wave(0.3, 5), 2),
-                      "npu": 0.1},
-            "battery": {"percent": 95, "status": "Discharging", "plugged": False, "draining": True, "watts": -1.96,
-                        "empty_s": 22440},
-            "net": {"wlan0": [int(2000 + wave(4000, 3)), 1000], "wlanap": [0, 0], "usb0": [0, 0]},
-            "games": [{"package": pkg, "title": game.get("title") or pkg, "kind": "quest", "appid": 1,
-                       "elapsed": 1500 + t, "cpu": 9.4, "gpu": round(44 + wave(6, 5), 1), "mem": 3_390_000_000,
-                       "processes": 87, "fps": round(71.6 + wave(0.6, 2) - (9 if t % 41 == 30 else 0), 1),
-                       "frame_ms": 0.0}],
-            "procs": procs, "filter": "game"}
-
-    def _run(self) -> None:
-        for self.t in range(100000):
-            if self.closed:
-                return
-            self.on_sample(self._sample())
-            if self.t >= self.BACKFILL:  # the first two minutes at once (full charts), then one per second
-                time.sleep(1)
-
-    def set_interval(self, s): pass  # noqa: E704
-    def set_filter(self, w): pass  # noqa: E704
-    def pause(self, p): pass  # noqa: E704
-
-    def kill(self, pid, sig="TERM", force=False):
-        return {"ended": True, "pid": pid}
-
-    def end_game(self, package):
-        return {"ended": True, "via": "steam"}
-
-    def close(self):
-        self.closed = True
-
-
-def open_type_tab(app: FramePortApp) -> None:
-    """The Type on Frame tab, with one key 'pressed' so the screenshot shows it working."""
-    app.type_on_frame()
-    time.sleep(1.5)
-    app.keyboard_view.press("Enter")
-
-
-def open_monitor_details(app: FramePortApp) -> None:
-    """The Monitor with its details row open."""
-    app.go("monitor")
-    time.sleep(2)
-    if not app.monitor_view.details.visible:
-        app.monitor_view.toggle_details()
-
-
-LINUX_APPIMAGE = "linux.venera"  # --linux's packages
-LINUX_FOLDER = "linux.matineevr"
-
-
-def _elf(machine: int = 183, appimage: bool = False, extra: bytes = b"") -> bytes:
-    """A minimal ELF header (183 = aarch64): enough for FramePort's Linux app detection."""
-    head = bytearray(64)
-    head[:4], head[4], head[5] = b"\x7fELF", 2, 1
-    if appimage:
-        head[8:11] = b"AI\x02"
-    head[18:20] = machine.to_bytes(2, "little")
-    return bytes(head) + extra
-
-
-def add_fake_linux_apps() -> None:
-    """--linux: an AppImage and a VR app folder (with a helper program, so "Change program…" shows) in the library."""
-    from frameport import pipeline
-    from frameport.core.paths import user_data_dir
-
-    base = user_data_dir() / "smoke-linux"
-    app = base / "MatineeVR"
-    (app / "lib").mkdir(parents=True, exist_ok=True)
-    (base / "Venera-2.4.2-aarch64.AppImage").write_bytes(_elf(appimage=True, extra=b"\0" * 4096))
-    (app / "MatineeVR").write_bytes(_elf(extra=b"\0" * 8192))
-    (app / "crashpad_handler").write_bytes(_elf())
-    (app / "lib" / "libopenxr_loader.so.1").write_bytes(_elf(extra=b"xrCreateInstance"))
-    pipeline.add_linux_app(base / "Venera-2.4.2-aarch64.AppImage")
-    pipeline.add_linux_app(app)
-
-
-STEP_SECONDS = 4  # per screen (the screenshot is taken ~3 s in)
-
-
-def driver(app: FramePortApp, steps: list[tuple[str, callable]], ready: threading.Event, done_step: list):
+def driver(app: FramePortApp, steps: list[tuple[str, callable]], ready: threading.Event, shot_done: threading.Event,
+           done_step: list):
+    """Runs one step, hands it to the shooter ("ready") and waits until its screenshot and mouse actions are done
+    ("shot_done") before the next one: so a screenshot always shows its own step, however long the shooter takes."""
     for name, action in steps:
         try:
             action(app)
         except Exception:  # noqa: BLE001
             ERRORS.append(f"{name}: {traceback.format_exc()}")
         done_step.append(name)
+        shot_done.clear()
         ready.set()
-        time.sleep(STEP_SECONDS)
+        if not shot_done.wait(STEP_TIMEOUT):
+            ERRORS.append(f"{name}: no screenshot within {STEP_TIMEOUT} s, stopping")
+            return
 
 
 def find_button(root, text: str):
@@ -400,28 +99,31 @@ def main() -> int:
     ap.add_argument("--no-test", action="store_true", help="with --frame: skip the launch-test job")
     ap.add_argument("--scale", type=float, default=1.0, help="UI scale to render at (e.g. 1.5)")
     ap.add_argument("--viewport", default="1280x820", help="browser size, e.g. 2560x1440")
-    ap.add_argument("--update", action="store_true", help="pretend a new FramePort release exists (update UI)")
+    ap.add_argument("--update", action="store_true", help="pretend a new FramePort release exists (update UI: "
+                    "changelog dialog, what's new bar + dialog, Settings changelog)")
     ap.add_argument("--fake-frame", action="store_true", help="pretend a Steam Frame is connected (no device needed)")
     ap.add_argument("--hover", default=None, help="x,y: move the mouse there before the Library screenshot")
     ap.add_argument("--install-questions", nargs="+", metavar="PKG", default=None,
                     help="open the install questions for these games, then click each dialog's main button twice "
                          "(a double click must not duplicate dialogs); nothing is installed")
+    ap.add_argument("--setup-url", action="store_true", help="the connect page's setup URL flow: Start setup, a "
+                    "pretend Frame asks (/hello), click Allow, check /wait hands over the code")
     ap.add_argument("--usb-setup", action="store_true", help="click 'Set up with a USB cable' on the connect page "
                     "(a Frame cabled to this PC) and screenshot what follows")
     ap.add_argument("--docs", action="store_true", help="only the screens used in the docs (Library, --game, Frame)")
     ap.add_argument("--gestures", action="store_true", help="with --fake-frame: real mouse drags (drag-select) and "
-                    "right-clicks (menus) in Files, Screenshots and the Library; prints what got selected")
+                    "right-clicks (menus) in Files, Screenshots and the Library; prints what got selected "
+                    "(positions for --viewport 1440x900)")
     ap.add_argument("--only", default=None, help="comma-separated step names to keep (e.g. monitor,monitor-details)")
     ap.add_argument("--linux", action="store_true", help="add two pretend arm64 Linux apps and render their pages")
     ap.add_argument("--links", action="store_true", help="install links: the Add games menu, the paste dialog, the "
                     "confirmation for a pretend FrameDrop manifest, Settings → Install links and (with --game) the "
                     "VR / flat window choice")
+    ap.add_argument("--themes", action="store_true", help="Settings' theme picker, then switch every theme while "
+                    "running (Library and --game in each)")
     args = ap.parse_args()
     if args.linux:
         add_fake_linux_apps()
-    global STEP_SECONDS
-    if args.hover:
-        STEP_SECONDS = 7
     from frameport.ui import theme
 
     theme.set_scale(args.scale)
@@ -430,19 +132,26 @@ def main() -> int:
     game = args.game or (library.games()[0]["package"] if library.games() else None)
     steps = [("library", lambda a: a.navigate(0)), ("frame", lambda a: a.navigate(1)),
              ("files", lambda a: a.go("files")), ("screenshots", lambda a: a.go("screenshots")),
-             ("live", lambda a: a.go("live")), ("keyboard", lambda a: a.go("keyboard")),
+             ("live", lambda a: a.go("live")), ("live-streaming", fake_live_stream),
+             ("keyboard", lambda a: (stop_fake_live(a), a.go("keyboard"))),
              ("monitor", lambda a: a.go("monitor")), ("monitor-details", open_monitor_details),
-             ("tools", lambda a: a.go("settings"))]
+             ("tools", lambda a: a.go("settings")),
+             # the index on the left: "This PC" scrolls the page there
+             ("settings-index", lambda a: a.page.run_task(a.settings_view.show_section, "pc"))]
     if game:
         steps.insert(1, ("game", lambda a: a.open_game(game)))
         steps.insert(2, ("game-customize", lambda a: a.open_game(game, advanced=True)))
         steps += [("share-dialog", lambda a: a.share_config_dialog(game)),
                   ("report-dialog", lambda a: (a.page.pop_dialog(), a.report_problem_dialog(game))),
                   ("custom-art-dialog", lambda a: (a.page.pop_dialog(), a.custom_artwork(game)))]
+        # a pretend install of --game, mid-upload: the transit in the sidebar, the game page and Activity
+        steps += [("transit-game", lambda a: (a.page.pop_dialog(), start_fake_install(a, game), a.open_game(game))),
+                  ("transit-activity", lambda a: a.show_activity(True))]
         if args.fake_frame:  # GitHub #90: the Move to… dialog (drives load in the background)
             steps.append(("move-dialog", lambda a: (a.page.pop_dialog(), a.move_game(game))))
+            steps.append(("uninstall-dialog", lambda a: (a.page.pop_dialog(), a.uninstall(game))))
         # last: the right-click menu stays open over whatever comes next
-        steps.append(("library-menu", lambda a: (a.page.pop_dialog(), a.navigate(0), time.sleep(3),
+        steps.append(("library-menu", lambda a: (a.show_activity(False), a.navigate(0), time.sleep(3),
                                                  a.library_view.open_menu(game))))
     if args.docs:
         steps = [("library", lambda a: a.navigate(0))]
@@ -458,10 +167,63 @@ def main() -> int:
         steps.append(("type-on-frame", lambda a: (a.page.pop_dialog(), open_type_tab(a))))
         steps.append(("monitor", lambda a: a.go("monitor")))
         steps.append(("power-confirm", lambda a: (a.page.pop_dialog(), a.frame_power("restart"))))
-    mouse: dict[str, callable] = {}  # step name -> mouse actions (Playwright page) after its screenshot
-    if args.gestures:
-        STEP_SECONDS = 14  # the mouse actions run after each step's screenshot, before the next step
+    # step name -> mouse actions (Playwright page) after its screenshot, then a "-mouse" screenshot unless the
+    # actions return True (they saved their own picture, e.g. an opened menu)
+    mouse: dict[str, callable] = {}
+    hover: dict[str, tuple[float, float]] = {}  # step name -> where the mouse rests for its screenshot
+    if args.hover:
+        hover["library"] = tuple(float(v) for v in args.hover.split(","))
+    if not args.docs and args.viewport == "1440x900":  # menus that open from buttons (positions at this size)
+        def open_and_shoot(x, y, name):
+            def run(page):
+                page.mouse.click(x, y)
+                time.sleep(2)
+                page.screenshot(path=str(args.out / f"{name}.png"))
+                page.mouse.click(1420, 880)  # outside the menu (Flutter's popup ignores Escape)
+                return True
+            return run
+        mouse["library"] = open_and_shoot(1354, 54, "library-add-menu")
+        # type to search: click an empty part of the header, then type (the "-mouse" shot shows "arc" + the matches)
+        steps.insert(1, ("library-typed", lambda a: a.library_view.clear_search()))
+        def typed(page):
+            page.mouse.click(480, 60)
+            time.sleep(0.5)
+            page.keyboard.type("arc", delay=120)
+            if args.fake_frame:  # the matches' cover buttons: Install (Arcsmith, not installed), Update (Pinball FX)
+                time.sleep(PAINT_SECONDS)
+                for name, pt in (("library-install-hover", (742, 215)), ("library-install-button", (742, 276)),
+                                 ("library-update-button", (357, 276))):
+                    page.mouse.move(*pt, steps=8)
+                    time.sleep(1.2)
+                    page.screenshot(path=str(args.out / f"{name}.png"))
+                page.mouse.move(1300, 700)
+        mouse["library-typed"] = typed
+        steps.insert(2, ("library-cleared", lambda a: a.library_view.clear_search()))
+        if args.fake_frame:  # the "On your Frame" shelf's first card, hovered: its Play button shows
+            steps.insert(3, ("library-shelf-hover", lambda a: None))
+            hover["library-shelf-hover"] = (403, 268)
+            # the grid's first card: hovered (lift, zoom, the glass button), the pointer on its button, then Play:
+            # the portal rings mid-ripple and the "Starting on Frame…" pill
+            steps.insert(4, ("library-card-hover", lambda a: None))
+            hover["library-card-hover"] = (357, 420)
+            steps.insert(5, ("library-card-button", lambda a: None))
+            hover["library-card-button"] = (357, 497)
 
+            def launch(page):
+                page.mouse.move(357, 497)
+                time.sleep(1.2)
+                page.mouse.click(357, 497)
+                for i in range(6):  # the launch, frame by frame (rings, then the pill)
+                    time.sleep(0.15)
+                    page.screenshot(path=str(args.out / f"library-play-launch-{i}.png"))
+                time.sleep(1.0)
+                page.screenshot(path=str(args.out / "library-play-starting.png"))
+                page.mouse.move(130, 520)
+                return True
+            mouse["library-card-button"] = launch
+        if game:
+            mouse["game"] = open_and_shoot(491, 306, "game-more-menu")  # the hero's "…"
+    if args.gestures:  # the mouse actions run after each step's screenshot, before the next step
         def drag(*points):
             def run(page):
                 page.mouse.move(*points[0])
@@ -498,11 +260,12 @@ def main() -> int:
                  "files-dragged": right_click(900, 320),                      # a selected one: "… 3 items"
                  "files-menu": lambda page: (escape(page), time.sleep(0.5), right_click(900, 600)(page)),
                  "files-space-menu": escape,
-                 "screenshots": drag((680, 280), (950, 280), (950, 430)),     # 3 shots
-                 "screenshots-dragged": right_click(950, 430),
+                 "screenshots": drag((400, 300), (680, 300), (950, 300)),     # 3 shots (the first row)
+                 "screenshots-dragged": right_click(950, 300),
                  "screenshots-menu": escape,
-                 "library": drag((360, 300), (560, 300), (760, 300)),        # 3 cards, select mode on
-                 "library-dragged": drag((560, 300), (760, 300))}             # from a selected card: deselects 2
+                 # the grid's first row (below the "On your Frame" shelf)
+                 "library": drag((360, 560), (560, 560), (760, 560)),        # 3 cards, select mode on
+                 "library-dragged": drag((560, 560), (760, 560))}             # from a selected card: deselects 2
     if args.linux:
         def linux_filter(a, value):
             a.navigate(0)
@@ -519,6 +282,8 @@ def main() -> int:
                                            a.library_view.open_menu(LINUX_APPIMAGE)))]
     if args.links:
         from frameport import deeplink
+        from frameport.ui import components as C
+        from frameport.ui import easter
         from frameport.ui.views import link_dialog
 
         fake = deeplink.Manifest("Example Game", [
@@ -540,12 +305,14 @@ def main() -> int:
         ImageDraw.Draw(im).ellipse((72, 72, 184, 184), fill=(255, 214, 102, 255))
         im.save(icon)
 
-        def add_menu(a):
-            a.navigate(0)
-            time.sleep(2)
-        steps = [("library", add_menu),
+        steps = [("library", lambda a: a.navigate(0)),
                  ("links-paste", lambda a: a.pick_link()),
                  ("links-confirm", lambda a: (a.page.pop_dialog(), link_dialog._confirm(a, fake, sizes, False, icon))),
+                 # the homepage's example button: the demo question (no network), then its Install's easter egg
+                 ("links-demo", lambda a: (a.page.pop_dialog(), a.open_install_link(
+                     deeplink.make_link(deeplink.DEMO_MANIFEST), from_web=True))),
+                 ("links-demo-install", lambda a: (a.page.pop_dialog(), easter.demo_install(
+                     a, C._asset_src(link_dialog.DEMO_COVER)), time.sleep(0.9))),
                  ("links-settings", lambda a: (a.page.pop_dialog(), a.go("settings")))]
         if game:
             steps.append(("links-display-mode", lambda a: a.open_game(game, advanced=True)))
@@ -554,7 +321,31 @@ def main() -> int:
             time.sleep(2)
             page.screenshot(path=str(args.out / "library-add-menu.png"))
             page.mouse.click(120, 520)  # outside the menu (Flutter's popup ignores Escape)
-        mouse["library"] = add_menu_open  # tall pages: run with e.g. --viewport 1280x3200
+            return True
+        # tall pages: run with e.g. --viewport 1280x3200 (at 1440x900 the tour's own Add games click is kept)
+        mouse.setdefault("library", add_menu_open)
+    if args.themes:
+        from frameport.ui import theme as T
+        from frameport.ui.app import themes_dir
+
+        T.load_user_themes(themes_dir())  # installed theme files are switched through too
+
+        def switch(name):
+            def run(a):
+                library.set_setting("ui.theme", name)  # what the picker does
+                a.restyle(name)
+            return run
+
+        def appearance(a):
+            """Settings: Appearance is its first section."""
+            a.go("settings")
+        steps = [("appearance", appearance)]
+        for name in [n for n in T.THEMES if n != T.THEME] + [T.THEME]:
+            steps.append((f"{name}-switched", switch(name)))
+            steps.append((f"{name}-appearance", appearance))
+            steps.append((f"{name}-library", lambda a: a.navigate(0)))
+            if game:
+                steps.append((f"{name}-game", lambda a: a.open_game(game)))
     if args.usb_setup:
         def continue_usb(a):
             dialog = [d for d in a.page._dialogs.controls if d.open and type(d).__name__ == "AlertDialog"][-1]
@@ -563,6 +354,52 @@ def main() -> int:
             button.on_click(None)
         steps = [("usb-explain", click_usb_setup), ("usb-continue", continue_usb),
                  ("usb-wait", lambda a: time.sleep(8)), ("usb-after", lambda a: time.sleep(10))]
+    if args.setup_url:
+        import json as _json
+        import secrets as _secrets
+        import urllib.request as _url
+
+        got: dict = {}
+
+        def start_setup(a):
+            from frameport.frame import pairing as _pairing
+
+            _pairing.ensure_reachable = lambda server: "ok"  # never an admin prompt from a smoke test
+            a.navigate(1)
+            time.sleep(2)
+            button = find_button(a.body, "Start setup")
+            print(f"start button found: {button is not None}", flush=True)
+            button.on_click(None)
+
+        def frame_asks(a):
+            """What bootstrap/setup.sh does on the Frame: /hello, then /wait (in the background, until allowed)."""
+            base = f"http://127.0.0.1:{a.pairing.port}"
+            nonce = _secrets.token_hex(12)
+            with _url.urlopen(f"{base}/hello?host=steamframe&nonce={nonce}", timeout=10) as r:
+                got["hello"] = _json.load(r)
+
+            def wait():
+                with _url.urlopen(f"{base}/wait?id={got['hello']['id']}", timeout=120) as r:
+                    got["wait"] = (r.status, _json.load(r))
+            threading.Thread(target=wait, daemon=True).start()
+            time.sleep(2)
+
+        def allow(a):
+            button = find_button(a.body, "Allow")
+            print(f"allow button found: {button is not None}", flush=True)
+            button.on_click(None)
+            time.sleep(2)
+            ok = got.get("wait", (0, {}))[1].get("code") == a.pairing.code
+            print(f"setup-url: digits {got['hello']['digits']}, words {got['hello']['words']}, code handed over: "
+                  f"{ok}", flush=True)
+            if not ok:
+                ERRORS.append(f"setup-url: /wait gave {got.get('wait')}")
+
+        def line(a):
+            button = find_button(a.body, "Use the setup command")
+            button.on_click(None)
+        steps = [("setup-url", start_setup), ("setup-ask", frame_asks), ("setup-allowed", allow),
+                 ("setup-line", line)]
     if args.install_questions:
         queued: list[str] = []
 
@@ -582,14 +419,48 @@ def main() -> int:
         steps = [("library", lambda a: a.navigate(0)), ("questions", open_questions),
                  ("after-1st-double", double_click), ("after-2nd-double", double_click), ("end", report)]
     if args.update:
-        from frameport import updates
+        from frameport import __version__, updates
 
+        notes = ("FramePort v9.9.9: Windows (x64), macOS (Apple Silicon) and Linux (x64, ARM64).\n\n## What's new\n\n"
+                 "- Self-update test release: the update dialog shows every version since yours\n"
+                 "- **Bold** and `code` in notes, and a [link](https://example.invalid)\n- A third bullet\n\n"
+                 "Already have FramePort? It offers this update itself (Library → **Update now**).\n\n## Install\n\n"
+                 "- footer that the changelog leaves out\n")
         fake = updates.Update(version="9.9.9", tag="v9.9.9", page="https://example.invalid", asset=None, asset_url=None,
-                              sums_url=None, wheel_url=None,
-                              notes="## What's new\n- Self-update test release\n- **Bold** and `code` in notes")
+                              sums_url=None, wheel_url=None, notes=notes, published="2026-10-08T10:00:00Z")
+        major, minor, _patch = updates.parse_version(__version__)[:3]
+        older = f"{major}.{max(minor - 1, 0)}"
+
+        def entry(version, date, body):
+            return updates.ChangelogEntry(version=version, tag=f"v{version}", date=date, title=f"FramePort v{version}",
+                                          body=body, page="https://example.invalid",
+                                          dev=updates.is_dev_version(version))
+        fake_log = [updates.entry_from_update(fake),
+                    entry("9.9.8", "2026-10-06", "- Install links from FrameDrop buttons\n- Faster uploads over USB"),
+                    entry("9.9.7", "2026-10-04", "- Monitor tab with live Frame stats"),
+                    entry(__version__, "2026-10-02", "- The version you have: **Live view** with sound\n"
+                                                     "- Files tab: drag and drop\n- Smaller fixes"),
+                    entry(f"{older}.3", "2026-09-30", "- Proton defaults to the newest stable build"),
+                    entry(f"{older}.2", "2026-09-28", "- Language packs")]
+        updates.fetch_changelog = lambda force=False, need=None: list(fake_log)  # no GitHub in screenshots
+
+        def news(a):
+            a.updater._set(None)
+            a.updater.news = updates.recent_history(fake_log, n=3)
+            a.navigate(0)
+            a.refresh_view()
+
+        def settings_updates(a):
+            a.go("settings")
+            # once the page is mounted: scrolling an unmounted column does nothing
+            threading.Timer(1.0, lambda: a.page.run_task(a.settings_view.show_section, "updates")).start()
         steps += [("update-banner", lambda a: (a.updater._set(fake), a.navigate(0))),
                   ("update-dialog", lambda a: a.updater.show_dialog()),
-                  ("update-settings", lambda a: (a.page.pop_dialog(), a.go("settings")))]
+                  ("update-settings", lambda a: (a.page.pop_dialog(), settings_updates(a))),
+                  ("update-whats-new-bar", lambda a: news(a)),
+                  ("update-whats-new-dialog", lambda a: a.updater.show_news()),
+                  ("update-settings-changelog", lambda a: (a.page.pop_dialog(), settings_updates(a),
+                                                           a.updater.show_history()))]
     if args.frame:
         from frameport.frame.connection import parse_target
 
@@ -615,55 +486,70 @@ def main() -> int:
     if args.only:  # in the order given (e.g. frame-connected,monitor)
         by_name = dict(steps)
         steps = [(n, by_name[n]) for n in args.only.split(",") if n in by_name]
-    ready, done = threading.Event(), []
+    # a first screen while the web fonts load: shot before that, text measured with a fallback font wrapped or
+    # overlapped ("Q / uest", a check mark over its pill's text); its picture is 00-warmup.png. Settings, not the
+    # Library: opening the Library twice restarts its card loading and the next shot caught it empty
+    steps.insert(0, ("warmup", lambda a: a.go("settings")))
+    ready, shot_done, done = threading.Event(), threading.Event(), []
 
+    from frameport.ui.app import serialize_flet_updates
+
+    serialize_flet_updates()  # as the app's main() does
     if args.fake_frame:  # never reach a real Frame (start-up auto-connect, discovery, the 30 s poll)
-        from frameport.frame import keyboard, monitor
-
-        keyboard.KeyboardSession = FakeKeyboardSession
-        monitor.MonitorSession = FakeMonitorSession
-        FakeMonitorSession.GAME = game  # the game card shows --game (with its artwork)
-        FramePortApp.connect = lambda self, *a, **k: None
-        FramePortApp.refresh_frame = lambda self, *a, **k: None
+        install_fakes(game)
 
     def app_main(page: ft.Page):
         try:
             app = FramePortApp(page)
             if args.fake_frame:
-                app.target = FakeTarget()
-                app.frame_info, app.frame_state = app.target.describe(), "connected"
+                attach_fake_frame(app)
         except Exception:  # noqa: BLE001
             ERRORS.append("startup: " + traceback.format_exc())
             return
-        threading.Thread(target=driver, args=(app, steps, ready, done), daemon=True).start()
+        threading.Thread(target=driver, args=(app, steps, ready, shot_done, done), daemon=True).start()
 
     def shooter():
+        # wait until the app's web server listens (a fixed 6 s was too short with another smoke run on the machine)
+        import socket
+
         from playwright.sync_api import sync_playwright
 
-        time.sleep(6)
+        for _ in range(90):
+            try:
+                socket.create_connection(("127.0.0.1", PORT), timeout=1).close()
+                break
+            except OSError:
+                time.sleep(1)
+        time.sleep(2)
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(args=["--use-gl=swiftshader", "--enable-unsafe-swiftshader"])
                 page = browser.new_page(viewport={"width": vw, "height": vh})
                 page.goto(f"http://127.0.0.1:{PORT}", wait_until="networkidle", timeout=120_000)
-                shot = 0
-                deadline = time.time() + 240 + 8 * len(steps)
-                while len(done) < len(steps) and time.time() < deadline:
-                    if ready.wait(1):
-                        ready.clear()
-                        name = done[-1]
-                        time.sleep(3)  # let Flutter paint
-                        if args.hover and name == "library":
-                            hx, hy = (float(v) for v in args.hover.split(","))
-                            page.mouse.move(hx, hy)
+                shot = handled = 0
+                while handled < len(steps):  # one hand-off per step (see driver)
+                    if not ready.wait(STEP_TIMEOUT):
+                        ERRORS.append(f"browser: no step after {done[-1] if done else 'start'} "
+                                      f"within {STEP_TIMEOUT} s")
+                        break
+                    ready.clear()
+                    name = done[-1]
+                    try:
+                        time.sleep(PAINT_SECONDS)
+                        if name in hover:
+                            page.mouse.move(*hover[name])
                             time.sleep(1.5)
                         page.screenshot(path=str(args.out / f"{shot:02d}-{name}.png"))
                         shot += 1
-                        if name in mouse:
-                            mouse[name](page)
-                            time.sleep(2)
+                        if name in hover:
+                            page.mouse.move(130, 520)  # the sidebar's empty part: nothing left hovered
+                        if name in mouse and mouse[name](page) is not True:
+                            time.sleep(PAINT_SECONDS)  # e.g. typed search: the matching cards fade in
                             page.screenshot(path=str(args.out / f"{shot:02d}-{name}-mouse.png"))
                             shot += 1
+                    finally:
+                        handled += 1
+                        shot_done.set()
                 browser.close()
         except Exception:  # noqa: BLE001
             ERRORS.append("browser: " + traceback.format_exc())

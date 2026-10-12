@@ -10,8 +10,20 @@ Read `docs/PLAYBOOK.md` (symptom → fix) before debugging a game, and `docs/FRA
 ## Layout
 - `src/frameport/` — Python package. `pipeline.py` is the API the CLI (`cli.py`) and GUI (`ui/`, Flet 1.0) share.
   - `ui/` — `app.py` shell (sidebar with Frame connection + activity cards, routing, actions, 30 s connection poll),
-    `theme.py` (dark design tokens; change colours/spacing only there), `components.py` (pill, card, callout,
-    status_row, art_fill, confirm, `update()` = safe update: in Flet 1.0 reading `.page` of an unmounted control
+    `theme.py` (design tokens; change colours/spacing only there. Dark-only colour themes (owner: no light mode):
+    built-ins `portal` (default), `portal_oled` (true black) and `original` (the old violet; alias `classic`). Portal =
+    the logo's dichotomy: orange ACCENT = main action + selection, blue SECONDARY = secondary (outlined) buttons,
+    progress, switch tracks, PC; `dual` themes add the blue→orange sidebar edge, two-colour wordmark (`C.wordmark`) and
+    selected-tab fade (`C.portal_gradient`). Installable theme files `<data>/themes/*.json` (docs/THEMES.md: name,
+    base, dual, any subset of `T.TOKENS`; refused if light/unreadable, `T.ThemeError`), Settings → Appearance: cards
+    switch live via `app.restyle()` (rebuilds the shell, drops cached views; setting `ui.theme`), "Install theme
+    file…", "Copy this theme as a file", bin icon removes. Read tokens as `T.NAME` when building — never as a default argument or module-level constant (they
+    keep the import-time theme; module maps refill through `T.on_change`, `tests/test_theme.py` checks defaults)),
+    `glyphs.py` + `icons/` (the logo `logo.svg`/`logo-solid.svg` = a monitor that comes out of a tilted portal as the
+    Frame, and 24 px line glyphs `fp:frame|port|patch|container|test|pc|sync|live|shot|keys|recipe|link`, copied into
+    the assets dir and shown as tinted `ft.Image`s: pass `G.FRAME` … wherever an icon goes, `C.as_icon` / the button
+    helpers handle both kinds; `src/assets/icon.png` = the bundles' app icon), `components.py` (pill, card, callout,
+    checklist, art_fill, confirm, `update()` = safe update: in Flet 1.0 reading `.page` of an unmounted control
     raises), `jobs.py` (background FIFO job queue, one at a time, cancel via Reporter; no Flet), `views/`
     (library: search/filters/tags/sort as pure tested helpers; game: hero + one-click install, patches under
     "Customize"; frame: device + readiness + installed, or connect wizard; files: the Frame's file manager (persistent
@@ -26,7 +38,8 @@ Read `docs/PLAYBOOK.md` (symptom → fix) before debugging a game, and `docs/FRA
     launch.sh logs `start/end <unix>` to `<anchor>/plays.log` (upgrade_launchers adds it; Proton launchers exec → start
     only) and shots are matched by time; thumbnails cached in `<data>/screenshots-cache/<frame>/`, shown by asset URL;
     delete leaves screenshots.vdf alone (Steam rewrites it at exit); game menu → "Screenshots" = `go("screenshots",
-    pkg)`); live view (`views/live.py` + `install/livestream.py`: the Frame's built-in SteamVR "headset view" webcam
+    pkg)`; Copy image (card hover button, right-click, viewer) = `core/clipboard.copy_image` (Windows/WSL: PowerShell
+    bitmap + file via %TEMP%, macOS osascript PNG, Linux wl-copy/xclip; Flet's set_image only in web mode)); live view (`views/live.py` + `install/livestream.py`: the Frame's built-in SteamVR "headset view" webcam
     (`steamvr-v4l2cam.service` → v4l2loopback "SteamVR" /dev/video99, see docs/FRAME_RUNTIME.md) + the default
     output's pulse monitor (sound) → `fp_venc` (`native/venc`, own clean-room V4L2 driver of the Frame's iris
     hardware encoder: RGB24→NV12 box downscale with NEON, H.264 CBR, one frame per slot of an even fraction of the
@@ -53,7 +66,36 @@ Read `docs/PLAYBOOK.md` (symptom → fix) before debugging a game, and `docs/FRA
     await a FilePicker) must be coroutine functions or go through `page.run_task`: Flet doesn't await a lambda's
     coroutine (the Files row Download button silently did nothing). `ui_smoke.py --fake-frame --gestures` drives real
     mouse drags/right-clicks.
+    Live Frame data comes from one app-owned `app.monitor_hub` (`frame/monitor_hub.py`): subscribers name modules +
+    interval, the hub runs one agent `_monitor` stream (union of modules, fastest interval; per-module collection
+    needs agent v73), reconnects after a lost stream and stops it when nobody subscribes; `_poll` retries an "error".
+    Subscribers: "monitor" (the Monitor tab, everything, only while shown) and "card" = the sidebar's live Frame card
+    (`ui/frame_card.py` helpers: battery ring, "now playing" row with fps + 2-min sparkline → click opens Monitor;
+    games + battery every 5 s, paused while a job's stage is "Upload…", only while connected and setting
+    `ui.live_frame_card` (Settings → Appearance, default on) is on; else the battery comes from the 30 s poll).
+    ui_smoke injects `FakeMonitorSession` as the hub's `session_factory`.
     User tags live in library entries (`tags`), filters in library setting `ui.library`.
+    Easter eggs (`ui/easter.py`, owner's wish; never mentioned in the UI or docs): seven quick clicks on the sidebar
+    logo (the *wordmark's* portal glows + rings, a cover is tossed out of it and falls across the window on a random
+    arc: `toss_path`, `page.overlay` at the computed window position `_wordmark_portal`; the logo's portal in
+    themes without one), the Monitor's fps number has a mood tooltip (above the number, clear of the pointer) and
+    2.5 minutes within 0.5 fps of target (`PERFECT_SECONDS`) make the game card glow and pulse blue/orange for 5 s,
+    the number grow in the portal gradient and the sparkline take it; the "Perfect pacing" pill + line stay until the
+    rate slips (`PerfectPacing.done`, `_show_perfect`, `Sparkline.portal`), holiday badges on the logo that dance on
+    hover and shower the window on click (`HOLIDAY_MOTION`; `SHOWERS`/`shower_plan`: New Year confetti, winter snow,
+    Valentine hearts, Pi digits, clovers, hopping eggs, bouncing pumpkins; `holiday`: Valentine's
+    heart, Pi Day, St Patrick's clover, Easter Sat-Mon egg (computus), April 1 = the logo upside down until hovered,
+    Halloween pumpkin, Dec 31-Jan 1 party popper, else Dec 20-Jan 2 snowflake; on those days the logo's box grows to
+    hold the badge: Flutter only hit-tests inside a control's bounds; `FRAMEPORT_TODAY` pretends a date),
+    Library search "frameport" (logo spins, "That's me!"), Type on Frame "hello" (keys still go to the Frame; a
+    headset peeks up from the window's corner and waves), the battery ring (only the ring, with a glow behind
+    it; not the percentage) empties at once and spins while its bar refills, then pulses, on reaching 100 % plugged (`charged_now`, `ring_pulse`, `ring_glow`), a long upload (>2.5 min, `HOP_AFTER`) makes the transit cover hop, the Live view
+    tab shows a blinking ON AIR sign while streaming
+    (`app.sync_on_air`), install milestones (confetti +
+    message at the 1st/10th/100th *different* game: settings `fun.installed` = game ids, `fun.milestones` = shown;
+    each milestone shows once ever, recorded before it's shown; updates/reinstalls never count; the first use seeds
+    from games already on a Frame and marks passed milestones shown). Setting `ui.easter_eggs` (no UI) turns them
+    off; the showcase demo library has them off (steps hook `easter_eggs` for egg demos). Reduce motion: no animation.
     **Performance rules** (the app froze before): never put image bytes in controls — artwork is served by URL from the
     GUI assets dir (= user data dir; `ft.run(assets_dir=…)`), as thumbnails (`artwork/thumbs.py`, Pillow); the
     library view is persistent, streams cards in batches from a background thread and filters by toggling visibility;
@@ -61,10 +103,31 @@ Read `docs/PLAYBOOK.md` (symptom → fix) before debugging a game, and `docs/FRA
     **Never recreate clickable controls on progress ticks** (sidebar, activity tiles): update their properties —
     replacing them 5×/s swallowed clicks (couldn't leave the Library during an upload).
     Labelled switches: `C.switch(label, …)` (Material's default label colour is dark on our dark theme).
+    Cover cards (Library grid + shelf): `library.card_hover`/`hover_motion` (lift, art zoom inside the clipped frame,
+    radial `scrim`, accent-tinted shadow) and `C.CoverButton` (frosted round button, accent under the pointer; Play =
+    blue then orange ring ripple + "Starting on Frame…" pill for STARTING_S; its `.status` layer must sit *below*
+    the button in the Stack, else it takes the clicks); the game page's Play turns into "Starting on …" with a spinner
+    (`GameView._starting`). Reduce motion: no lift/zoom/rings. Filled buttons use a glyph's `-solid` variant
+    (`glyphs.solid`, e.g. `frame-solid.svg`: the outline glyph faded into the orange).
+    Empty states (`C.empty_state(..., features=[(icon, heading, sentence)])`): with features the portal is bigger, a
+    soft portal light (`C.portal_glow`) fills the screen and `C.feature_row` says what the screen will show (the
+    not-connected Files/Screenshots/Live/Type/Monitor tabs and the empty Library); the idle Live view is a framed
+    "screen" with its own Start button + `live_features()`, Type on Frame shows `keyboard_tips()` under the box.
+    Setup checklists (Frame → Ready to play, Settings → Tools / This PC) = `C.checklist([C.Check(ok, title, detail,
+    help, fix=(label, icon, handler), extra=control)])`: ok True/False/"warn"/None (= spinner); the fix button shows
+    inline only while an item isn't ready — wire existing actions only. Motion: `app.body` holds an
+    `ft.AnimatedSwitcher` (`app._show_view`): a new route gets a new wrapper (150 ms fade), a same-route redraw swaps
+    the wrapper's content (no animation; persistent views just remount); the wordmark's portal (`wordmark().data`)
+    pulses once when frame_state turns "connected"; both off with setting `ui.reduce_motion` (Settings → Appearance
+    "Reduce motion", `app.reduce_motion`). Settings has a fixed index column (`settings.SECTIONS` order, Appearance
+    first, Remove FramePort last): entries scroll the section column via `scroll_to(scroll_key=…)` (sections wrapped
+    in Containers with `ft.ScrollKey`), the header stays; `app.settings_view.show_section(key)` (ui_smoke
+    `settings-index`).
     Help hints: wording for non-obvious terms lives in `ui/help.py` (`HELP`); show it with `C.help_icon(key)` or the
-    `help=` argument of `section`/`status_row`/`kv`, tooltips via `C.tip()` (wraps). Game actions for the Library
-    right-click menu (one `ft.ContextMenu` around the grid, filled on right-click) and the game page's "…" menu come
-    from `app.game_actions()`. Picking art (`sources.apply_choice`) downloads into a staging dir and keeps the old
+    `help=` argument of `section`/`kv` (`C.Check` help key), tooltips via `C.tip()` (wraps). Game actions for the Library
+    right-click menu (one `ft.ContextMenu` around the grid, filled on right-click; short: `menus.quick_menu`, key actions
+    + "More actions…" = the game page with its full "…" menu opened from code, `app.open_game_menu`) and the game
+    page's "…" menu (`menus.menu_sections` quick=False, sectioned) come from `app.game_actions()`. Picking art (`sources.apply_choice`) downloads into a staging dir and keeps the old
     art if nothing came back; "Update Steam art on Frame" re-sends the art set to the game's anchor (agent ≥ 12).
     Patch descriptions/reasons describe the general case, naming games only as "e.g. …".
   - Installs: queued/cancelled/failed ones are remembered (library setting `ui.installs`) → Library "Resume" bar;
@@ -148,7 +211,14 @@ Rick and Morty runs on the Frame via its catalog recipe (OpenVR, no Revive),
     `FRAMEPORT_DESKTOP=1` skips the Steam-parent watchdog and Steam's display; ensure_host_fixes refreshes entries
     (older installs, stale ones removed), uninstall/purge remove them. Per app: library entry field `desktop_entry`
     (default on; patches don't apply to Linux apps) → game page switch → agent `desktop_entry`. Untested on device.
+  - Scanning: SideQuest backups (`<package>/<time>/apk|obb|data`) and AXRB downloads (`AXRB/<app id>/<binary id>/base.apk`
+    + OBBs/assets; its `patched/`/`*-axrb.apk` PC builds are skipped) are recognised (`sources/quest_dump.py`, FAQ).
   - Quest/Rift twins stay separate entries, shown and named in Steam "Title (Quest)"/"(Rift)" (`core/titles.py`).
+  - Rename… (game menu "Name and artwork", Library right-click; CLI `frameport rename <pkg> "<name>"|--reset`):
+    `pipeline.rename_game` sets `title` + `title_locked` (+ `auto_title` = the automatic name for reset; rescans, Rift
+    store matches and links then only update `auto_title`; a locked name gets no twin suffix); `sync_title` → Frame
+    agent v77 `rename` (deployment.json title, same shortcut appid: upsert matches by Exe) + art + one Steam restart, PC
+    `PcReviveTarget.rename`; an unreachable Frame → `steam_name_stale` (game page "Update name on Frame", next install).
   - `Recipe.as_is` = install unchanged (pre-patched libraries): `pipeline.prepare_as_is`; auto for APKs that already
     contain FrameBridge (`frame_patched`). For Rift it changes nothing (the dump is never modified; the Frame copy
     still gets launch fixes like the crash-reporter rename — `-nocrashreports` alone doesn't stop UE 4.23) — it does
@@ -186,8 +256,12 @@ Rick and Morty runs on the Frame via its catalog recipe (OpenVR, no Revive),
   - `diag/` — user feedback without tokens (docs/DIAGNOSTICS.md): `redact.py` (every file/issue text: IPs, hosts,
     home dirs, Steam ids, dump folders → placeholders), `bundle.py` (redacted diagnostics zip; agent v21
     `collect_diag`; `frameport diag collect|inspect|report`), `issue.py` (prefilled GitHub issue-form links, ≤7.5k
-    chars). "Share working config" → `working-config.yml` issue → maintainer label `catalog-accepted` →
-    `catalog-from-issue.yml` workflow (`scripts/catalog_from_issue.py` validates) opens a catalog PR. App log:
+    chars; `*_links` = `IssueLinks(form, plain, body)`: body = the Markdown the form writes (`### <label>`, recipe in
+    a ```yaml block; labels checked against the templates), plain = `?title=&body=` link. GitHub #167: some (Flatpak)
+    browsers opened the form with empty fields → `app.open_issue` copies the body to the clipboard and offers "Form
+    empty? Open a plain issue"; keep the templates valid YAML, quote `: ` in descriptions). "Share working config" →
+    `working-config.yml` issue → maintainer label `catalog-accepted` (a plain issue needs `working-config` added by
+    hand) → `catalog-from-issue.yml` workflow (`scripts/catalog_from_issue.py` validates) opens a catalog PR. App log:
     `core/applog.py` (`<data>/logs/app.log`, finished GUI jobs in `<data>/logs/jobs/`).
   - Self-update (docs/ARCHITECTURE.md "Self-update", docs/INSTALL.md "Updating"): `_version.py` = the only version
     (`frameport.__version__`; pyproject reads it via hatch `dynamic`; app log, diagnostics, User-Agent, Settings use
@@ -201,9 +275,15 @@ Rick and Morty runs on the Frame via its catalog recipe (OpenVR, no Revive),
     signed, `ready.json`); `apply()` writes + starts detached `apply.ps1`/`apply.sh` (wait for pid → Windows: copy over,
     replaced files kept in `updates/<ver>/previous` because the zip has no top folder; macOS/Linux: mv to `.old` + swap,
     rollback, `xattr -dr` quarantine → relaunch; `<data>/logs/update.log`). `ui/updater.py`: background check (10 s,
-    then 6 h), sidebar card (hidden control, toggled), Library bar (`library_bar`), notes dialog (`ft.Markdown`), job
+    then 6 h), sidebar card (hidden control, toggled), Library bar (`library_bar`), changelog dialog, job
     `app-update` that restarts only when no other job is active, `apply_pending_at_start()` in `main()` for
-    "Install updates automatically"; Settings → Updates. CLI: `--version`, `frameport update [--check (exit 10)]
+    "Install updates automatically"; Settings → Updates. Changelog: `updates.fetch_changelog` (releases list,
+    `app-releases.json`, same 6 h cache, offline → cached / []) → `ChangelogEntry` (`whats_new()` keeps only the tag
+    message's "What's new" part: CI's intro, update hint and release-footer.md stripped); `between`/`changelog_for`
+    (installed < v ≤ offered, dev entry only when on/choosing dev, skipped versions included), `recent_history`;
+    the update/dev dialogs show one collapsible section per version (`_changes_column`, newest open); after an update
+    `pending_news` (setting `update.last_seen_version`; first start only records it; offline → retried next start)
+    → Library "was updated" bar → "See what's new…"; Settings → Updates "What's new…" = recent history. CLI: `--version`, `frameport update [--check (exit 10)]
     [--yes]`, once-a-day stderr hint read from the cache only (`refresh_cache()` in a daemon thread writes no
     settings, to avoid read-modify-write races). `scripts/update_smoke.py <archive>` runs the real extract + swap script
     (no relaunch) — CI runs it on all three OS with the archive it just built.
@@ -212,7 +292,17 @@ Rick and Morty runs on the Frame via its catalog recipe (OpenVR, no Revive),
     by hand: the "Update now" button path (same apply(), called from the running app). macOS: CI smoke only.
 - `agent/frameport_agent.py` — runs **on the Frame** (python3 stdlib only), JSON over SSH. Owns the install layout,
   launch.sh template, Steam shortcuts (binary VDF), launch tests. Bump `AGENT_VERSION` when changing it.
-- `bootstrap/bootstrap.sh` — one-time Frame setup served by the pairing server (sshd, app key, avahi service, Lepton).
+- `bootstrap/bootstrap.sh` — one-time Frame setup served by the pairing server (app key, podman fix, Developer Mode, Lepton).
+  `bootstrap/setup.sh` — the setup URL (`curl -fsSL https://frameport.app/s | bash`, copied to the site by
+  `site/scripts/sync-media.mjs`): finds the PC (stdlib mDNS on 5353 for `_frameport-pair._tcp`, which the pairing
+  server announces while open; else the USB address and a /24 scan of `/ping`), `/hello` → the user clicks Allow (4
+  digits on both sides, `ask_digits`) → `/wait` hands over the code → runs bootstrap.sh exactly like the typed line.
+  Checked on the dev Frame 2026-10-10 (mDNS and scan paths) with a stub bootstrap; tests/test_setup_url.py.
+  Auto-pairing (`frame/autopair.py`, `app._start_auto_pair`, setting `frame.auto_pair`, default on; off with
+  FRAMEPORT_HOME/FRAMEPORT_NO_AUTO_PAIR): while no Frame is connected, Frames in Developer Mode (devkit mDNS, else a
+  30 s scan of the /24s for :32000/login-name, deduped by host key) are connected if FramePort's key works, else
+  offered the key via devkit.register every 4 s (refused at once until Pair new host is open; 45 s back-off after an
+  unanswered request). This WSL dev PC never hears the Frame's mDNS (Hyper-V firewall): the scan finds it.
 - `catalog/games/<package>.yaml` (installed apps also fetch these from GitHub `main`, see "Catalog updates") — 38 recipes (34 verified 2026-09-28; Deadpool VR, 4XVR, NEX Player and AC Nexus's
   90 Hz default confirmed later by the owner); `catalog/triage.yaml` — log signatures → fixes.
 - `native/` — sources of the prebuilt binaries in `artifacts/` (adapter, VrApi bridge patches, GL shim, stubs).
@@ -233,16 +323,33 @@ Games tests: `pytest -m games` (FRAMEPORT_GAMES=<downloads dir>); on-device chec
 native layer test: `FRAMEPORT_NATIVE_TESTS=1 pytest -m native` (compiles with the NDK, ~2 min on NTFS).
 Repo is on an NTFS drive (`core.fileMode=false`); line endings are LF (`.gitattributes`).
 - `FRAMEPORT_HOME=<dir>` isolates all app data (tests use it); `FRAMEPORT_JAVA/_OVERPORT_JAR/_APKSIGNER_JAR` override
-  managed tools. Real app data (WSL): `~/.local/share/frameport` (tools, overport workspace + game keystores, library,
-  artwork, frames.json, the app's SSH key which the dev Frame authorizes).
+  managed tools. **The owner's real app data is the Windows copy's: `%LOCALAPPDATA%\FramePort`** (= `/mnt/c/Users/
+  <user>/AppData/Local/FramePort`; tools, overport workspace + game keystores, library, artwork, frames.json, the app's
+  SSH key which the dev Frame authorizes; moved from WSL's `~/.local/share/frameport` on 2026-10-11, which is now only
+  a stale backup). The desktop shortcut "FramePort (dev)" runs the source checkout natively on Windows
+  (`%LOCALAPPDATA%\FramePort-dev\launch-frameport-dev.vbs`: venv `FramePort-dev\venv` via `UV_PROJECT_ENVIRONMENT`,
+  `uv sync --frozen`, log `FramePort\logs\dev-gui.log`). **WSL runs on that data need `FRAMEPORT_WINDOWS_DATA=1`**
+  (set in `.claude/settings.local.json`; `paths.shares_windows_data`): the data folder becomes the Windows one, saved
+  paths from the other side are translated on load (`paths.localize`: /mnt/d/X <-> D:\X in library.json, tools.json,
+  PC deployment records), Java/Cpp2IL keep one copy per OS (tools.json `java-<os>-<arch>`), and the link handler isn't
+  registered (it would point the Windows copy's links at WSL). Don't run a WSL GUI and the Windows GUI at once
+  (the gui.lock flock/msvcrt locks don't see each other; only the gui.alive heartbeat does).
 - Device checks: `frameport test <pkg>` / `frameport parity-device --results <parity.json> --baseline <launch.txt>
   [--test-only]`; the pre-FramePort baseline is `PATCHED/_known-good-2026-09-28/_frame-state/baseline-launch.txt`.
-- Docs screenshots (`docs/images/`): `python scripts/scrub_library.py ~/.local/share/frameport <dir> --status works,issues` (copies
-  library + artwork only; titles replace folder names, local paths → `D:/Games/...`, sort by size) then
-  `FRAMEPORT_HOME=<dir> python scripts/ui_smoke.py --out <shots> --docs --fake-frame --game <pkg>` (set
-  FRAMEPORT_JAVA/_OVERPORT_JAR/_APKSIGNER_JAR so no tool download toast appears; `--viewport 1280x2600` + crop for the
-  patch list). Check every PNG for paths, IPs, user names and repack/scene names before committing.
-  README rules (owner): states the project is a proof of concept, provides no piracy tools, credits the wrapped
+- Docs screenshots + videos (docs/SHOWCASE.md): never by hand. `uv run python scripts/showcase/render_docs.py`
+  renders `docs/showcase/shots.yaml` into `docs/images/` (every shot twice, kept when both agree; only visibly changed
+  files are rewritten; `--check` for CI) and `scripts/showcase/record_video.py [names] [--draft]` records the
+  storyboards `docs/showcase/videos/<name>.yaml` (tour = FramePort in use + README teaser; install = the install
+  tutorial: instruction cards for the download / the command on the Frame, the rest filmed from a first start) into
+  `docs/media/frameport-<name>.mp4`. Both build the demo library first (`demo_home.py`, profile `demo` or `fresh`:
+  catalog games from `demo-library.yaml` + `demo-analyses.json`, art/details cached in ~/.cache/frameport-showcase, a
+  pretend Frame from `showcase-frame.json`) in a temp FRAMEPORT_HOME: no personal data, refuses the real data dir
+  and placeholder art; discovery is off and the setup command shows placeholders for the address and code. Steps find elements
+  by name through Flutter's semantics tree (`scripts/showcase/web.py`: text, tooltip; the innermost match wins) —
+  give new icon-only controls a tooltip. The `showcase` workflow renders on UI pushes to main (+ the videos whose
+  storyboard changed, or the ones named on dispatch) and opens PR `showcase/update`; releases attach every video as
+  `FramePort-<name>.mp4`. `scripts/scrub_library.py` (the owner's own library) is only for private screenshots now.
+  README rules (owner): says not every game runs (no longer "proof of concept" since 1.0), provides no piracy tools, credits the wrapped
   projects (most functionality is theirs); neutral technical wording; no Quest2Frame mentions anywhere.
 - GUI smoke test: `uv pip install flet-web playwright && playwright install chromium`, then
   `FRAMEPORT_HOME=<test dir> python scripts/ui_smoke.py --out <dir> [--game <pkg>] [--frame steamos@<host>] [--update]` (`--update` = fake release: banner, dialog, Settings → Updates) and look
@@ -254,6 +361,11 @@ Repo is on an NTFS drive (`core.fileMode=false`); line endings are LF (`.gitattr
   `T.px(n)`, Material defaults through the theme's text_theme; never hardcode a bare pixel number in ui/.
   `scripts/ui_smoke.py --scale 1.5 --viewport 2560x1440` renders it. Flet draws a grey box for invalid layouts (e.g.
   an `expand` child in a `wrap=True` Row).
+- One GUI per data folder (`core/instance.py`, 2026-10-11): `<data>/gui.lock` (flock/msvcrt, pid inside); a second
+  start asks the open window to come to the front (`gui.focus`, read by `_watch_links`) and exits; a lock held with no
+  window (no `gui.alive`) and older than 30 s is a leftover FramePort process and is ended. `main()` ends the process
+  (`os._exit`) once `ft.run` returns: background threads (re-analysis, session triage) used to keep a windowless
+  process running. Session triage shows one pop-up for all games of a burst (`_announce_sessions`).
 - Stopping the GUI: `pkill -f` patterns match your own shell — use `pgrep -f "[b]in/frameport-gui|[f]let-desktop-light"`.
 
 ## Round-2 polish (2026-10-02)
@@ -307,7 +419,10 @@ The Frame runs firewalld (22 and 32000 open). PC side: the setup server needs in
 firewall blocks it silently (`DefaultInboundAction Block`): `pairing.ensure_reachable` adds a temporary rule via one
 UAC prompt, removed when the server stops (flag file in %TEMP%, max 35 min); hints per OS after 45 s without a request
 (`pairing.firewall_hint`). Flet 1.0 patches aren't thread-safe → `app.serialize_flet_updates()` (a dialog shown while a
-scan redraw ran never closed: "dropped a patch for unknown control").
+scan redraw ran never closed: "dropped a patch for unknown control"); it also makes property writes (Flet's
+`Prop.__set__`) take the same `app.FLET_LOCK`: a property set on a background thread while the loop packed a patch
+changed the control's `_values` mid-iteration ("dictionary changed size during iteration", a sidebar click's page
+change died while the live Frame card took a sample). Anything that serves the app (ui_smoke, showcase) calls it too.
 **Lepton:** needs an activity with category **LAUNCHER** (Quest apps often only have INFO → "APP_ACTIVITY is empty").
 **2D apps:** Lepton runs every app headless (`lepton.headless=true`, only OpenXR output reaches the headset) unless the app folder (`<base>/lepton-app/`) has a `lepton-show-flatscreen` file (liblepton/app_metadata.sh) → Waydroid window on gamescope; agent v28 `set_flatscreen` at finalize for `vr_kind == "none"`. Android 11's navbar covered the
 app's controls → patch `device.hide_navbar` (default on for vr_kind none, migration `flat_hide_navbar`) exports
@@ -528,7 +643,10 @@ shortcuts.vdf and writes once more if Steam put its old copy back (`shortcuts_lo
 auto-repair (`_add_then_play`) crashed (its job got a Job, not a reporter). Uploads resume on a transient OSError.
 Lepton's Android 11 has no clipboard service (134 services; checked with `podman exec … service check clipboard`):
 SDL/LÖVE apps crashed at start → `frame.sdl_clipboard` (`apk/dex.py`: in-place dex edit, nops one invoke, fixes
-the header checksum/signature; verified with LÖVE for Android 11.5, GitHub #24 Dramatic Shape). 2D apps (vr_kind none)
+the header checksum/signature; verified with LÖVE for Android 11.5, GitHub #24 Dramatic Shape). Godot 4.2-4.4 (Kotlin `as ClipboardManager`,
+GitHub #134 EndoparasiticVR) → `frame.godot_clipboard` (nops the `Intrinsics.checkNotNull` before that check-cast; Godot's
+clipboard methods return at once; analysis `godot_clipboard`, ANALYSIS_VERSION 10; checked on real godot-lib/templates
+4.2.2-4.4.1, not on the device; 4.1 and 4.5+ don't throw). 2D apps (vr_kind none)
 keep every suggested patch that isn't about VR (`needs_vr = False`), not a fixed list. FramePort on the Frame:
 `frame/local.py` (127.0.0.1, own key authorized; "This Frame (experimental)"; app data in
 ~/.local/share/frameport-app because ~/.local/share/frameport is the agent's) and Steam library changes wait while
@@ -618,6 +736,7 @@ FrameBridge `snapshot=N` (`snapshot_gl.c`, GLES): every N s the left-eye image t
 own context and saved as `files/fb_snap_0-7.ppm` (quarter size) — headless launches show a black headset view, this
 shows what the game draws. Vader: Lucasfilm logo (an OBB mp4: video works), then its loading card (portrait + segmented
 bar) that never advances; the async loader thread sleeps and OBB reads stop (~168 MB of a 2.7 GB pak).
+**SteamVR overlay apps (agent v75, 2026-10-10):** host OpenVR overlays (VRApplication_Overlay) are composited over Lepton (Quest) games on the Frame (probe checker seen over 4XVR in the headset view, `native/vroverlay_probe`); Windows ones register through Proton's vrclient too (Temporal Reality's Windows build created its overlays; fpsVR never reaches OpenVR under Proton). Detection `analysis/vroverlay.py` (bundled `.vrmanifest` with `is_dashboard_overlay`, else OpenVR + IVROverlay + self-registration markers, engine Other; Rift fingerprint `RIFT_ANALYSIS`), patch `pcvr.vr_overlay` (param autostart), Linux entry fields `vr_overlay`/`vr_overlay_autostart` (game page switch); agent `register_vr_overlay`/`unregister_vr_overlay`/`launch_vr_overlay` (IVRApplications via ctypes, live; manifest `<anchor>/frameport-overlay.vrmanifest`, the app's own key, binary = launch.sh). **SteamVR on the Frame reads only `binary_path_linux_arm`** (binary_path_linux alone is skipped). Overlay apps: no launch test, no Linux Steam-parent watchdog (`FRAMEPORT_OVERLAY`), not a "running game". A Steam overlay-app shortcut and a game shortcut run together. SteamVR's SetApplicationAutoLaunch didn't persist on the dev Frame (the watch never started by itself) → **agent v76: FramePort's own autostart**: the deployment's `overlay.autostart` is the source of truth; `ensure_host_fixes` (`ensure_overlay_service`) keeps the user service `frameport-vr-overlays.service` (`_vr_overlay_watch`, 5 s polls of the known vrserver's /proc stat) only while an overlay app has autostart on (register/unregister, uninstall, purge and the kill switch `~/.local/share/frameport/vr-overlays.disabled` / `FRAMEPORT_NO_OVERLAY_AUTOSTART` update it); a new vrserver (pid + start time, kept in `~/.cache/frameport-vr-overlays.json` across agent updates) → child `_vr_overlay_round`: wait for IVRApplications, 15 s grace, `launch_vr_overlay` for apps not running (folder process or GetApplicationProcessId); log `~/.local/share/frameport/vr-overlays.log`. Dev Frame: adopted the running vrserver, skipped the already running watch; a start after a real SteamVR start/boot is not yet seen. Details: docs/FRAME_RUNTIME.md "Overlay apps".
 **Lepton's logcat mirror dies (agent v67, 2026-10-09):** occasionally launch.log ends with `logcat: Unexpected EOF!` right after the game starts (about 1 launch in 50, Lepton 2.8.14 and 3.0.5): no dashboard auto-hide, no launch-test result. launch.sh's `_logcat_keeper` then reads `podman exec lepton-steamlaunch-<appid> logcat` itself into launch.log (up to 5 restarts while the game runs).
 **Double launch (agent v57, 2026-10-06):** a second Play while Lepton still boots (~10 s with nothing to see) made
 the second Lepton stop the first one's container ("Waiting for steamlaunch-<appid> (PID …) to exit", exit 137
@@ -671,12 +790,34 @@ FFmpeg's wrapper ended the EOS drain at the first one (two-pass VP9 lost its las
 them (codec revision 8; drain ends at LAST, or 1 s after a skipped empty buffer; dev Frame 2026-10-10: 600/600 =
 OMX.google.vp9 Y hashes). Rebuilds are deterministic (ext4 + NTFS path
 with spaces, two NDK copies → same; rev 8 141de01f…; PR #128's own sources → its 27a2d749…). Not yet run on the device.
+**Vulkan shader dump (GitHub #140, 2026-10-10):** adapter `vk_shader_dump=1` (Vulkan shim, `native/vkshim/shader_dump.h`;
+applies where vk_sanitize can: Unreal/Other arm64) writes each distinct SPIR-V module once to
+`files/fp_vk_shaders/<size>_<sha256>.spv` (tmp + rename) and one `index.txt` line per vkCreateShaderModule (`<seq> <ms>
+<unix ms> <name> new|known|again|failed`, O_APPEND) to find the module behind a GPU hang. Agent v72 `collect_diag`
+returns `shaders` (newest modules of fp_vk_shaders + fp_spirv, ≤4 MB each, base64) → bundle
+`games/<pkg>/target/shaders/`. Triage `gpu-hang` suggests both dumps; `triage.graphics_api` (FrameBridge's
+xrCreateSwapchain formats: <0x1000 Vulkan, else GL) keeps only the session's API's (`API_ONLY`). Host-tested only.
+Agent v74: a reporter's hang came ~10 s after the last new module, so the culprit wasn't among the newest written →
+with an index naming modules, `shader_dumps` sends every module of the index's **newest session** (after the last
+`# start`), deduplicated, last used first, each ≤4 MB, ≤30 MB in all (`session` = how many it names) + that session's
+index lines; no index (fp_spirv) = the old newest-by-mtime 4 MB. One JSON line (~40 MB base64) over the SSH channel
+is read whole by `Frame.agent` (fine at that size); `_Writer.fit` drops the least recently used modules last, after
+cutting logs, to stay under the 24 MB zip limit.
+**Unreal OBB check (GitHub #159, 2026-10-10):** Epic's DownloaderActivity checks OBB name+size (OBBData), then with `bVerifyOBBOnStartUp=true` CRCs the whole OBB; its screens are invisible in Lepton (stuck at `Displayed …/.DownloaderActivity`, triage `unreal-obb-check-stuck`) → `frame.unreal_skip_obb_check` (analysis `unreal_verify_obb`, ANALYSIS_VERSION 11) flips the manifest boolean (`axml.set_meta_data_bool`); skips only the CRC pass. Host-tested only.
+**Meta user id (GitHub #182, 2026-10-11):** OVRPort's platform loader (runtimes 3.4.3-23204ea and -aa54c3f) answers
+`ovr_GetLoggedInUserID` (and two other callers) without a Meta account with a made-up id from a helper (`stp; mov x29,
+sp; bl random; …; mov/movk x9 = 0x53444835ec580000 (6e18); add x0, x8, x9; ldp; ret`), kept only in memory → a new id
+every start; Walkabout Mini Golf files saves under `Profiles/Oculus/<id>/` and lost all progress. `frame.ovr_stable_user`
+(default_on, detect = the game has libovrplatformloader.so) rewrites the helper to `mov x0, <6e18 + 32 bits of
+sha256(package, keystore)>; ret`: stable per game and per user (keystores are personal), so online games never see two
+FramePort users as one. Found in every PATCHED build checked. Host-tested only; upstream candidate.
 **Vivox API 31 (GitHub #101, 2026-10-09):** newer Vivox builds (Green Hell VR) call Android 12 AudioManager
 communication-device methods from `com.vivox.sdk.AudioChangeListener` with no SDK check → NoSuchMethodError on Lepton's
 Android 11. `frame.vivox_audio_route` (analysis `vivox_api31`, ANALYSIS_VERSION 4) makes every such method return at
 once (`Dex.return_early`: return-void / `const/4 v0,0; return v0`; nopping the invoke would leave a move-result the
 verifier rejects). Older Vivox (Eleven Table Tennis, BattleSisters) lacks that code and isn't matched. Verified
 headless: Vivox initialises, 150 s at ~65-70 fps.
+**Steam Input gamepad for 2D apps (GitHub #162, agent v72, 2026-10-10):** Lepton's Android only has the Wayland seat's `wayland_touch/keyboard/pointer`. Steam makes its virtual pad (uinput, `/devices/virtual/input`, 28de:11ff, "Microsoft X-Box 360 pad N", ACL for steamos) only while the Frame's controllers are on (controller.txt "Steam Controller reserving XInput slot 0"; gone when they sleep), also with no game running; steamos-manager's 28de:0000 keys device isn't a pad (no BTN_SOUTH). Lepton's container root (system_server too) = steamos (`keep-id:uid=0`), so a bind-mounted `/dev/input/eventN` opens. Opt-in `device.steam_gamepad` (vr_kind none; suggested for `android.hardware.gamepad`/`LEANBACK_LAUNCHER`, analysis `gamepad`, ANALYSIS_VERSION 9): deployment.json `steam_gamepad` → launcher `GAMEPAD_LINE` (after the codec line: exports FRAMEPORT_GAMEPAD + LEPTON_ENV_SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD, puts `agent/bin` first on PATH) → `PODMAN_WRAPPER` (written by ensure_host_fixes; non-`run` calls go straight on; `run` imports the agent's `podman_run_args`; hands on to the next Podman after its own PATH entry with itself removed from PATH, so it chains to the codec wrapper either way round) adds the pads + `Vendor_28de_Product_<pid>.kl` (Xbox 360 layout). Verified headless with a uinput stand-in pad (Stremio's container: EventHub `classes=0x80000141`, our key layout, KeyEvent BUTTON_A dispatched); with Steam's real pad and a game: not yet. Pads made after the start aren't seen until the next one.
 **Multiview programs on flat framebuffers (GitHub #77, Doom3Quest, 2026-10-09, prototype):** Mesa enforces OVR_multiview's
 "program num_views == draw framebuffer views" rule (`draw_validate.c`, the draw is dropped silently); Qualcomm doesn't.
 Doom3Quest compiles every VS with `layout(num_views=2) in;` and draws its HUD/PDA into 2D-texture FBOs → black. Opt-in
@@ -686,6 +827,22 @@ table comes from dlsym on that handle; also first DT_NEEDED for its direct gl*/e
 built single-view twin (view 0, uniforms copied per draw); eglMakeCurrent resets the per-thread cache. Host-tested only
 (rewriter on all 19 Doom3Quest shaders + glmv.c against a stand-in GL, `tests/test_gl_multiview_fbo.py`); the host's
 Mesa 23.2 llvmpipe has no OVR_multiview. Headset-verified by Xandrix1987 (2026-10-09: HUD/PDA shown, no fps drop) -> in the Doom3Quest catalog recipe.
+**BlazeRush (GitHub #57, Klownicle's verified guide, 2026-10-10; FramePort's version headless-tested only):**
+`frame.blazerush` (1.0.349 only: exec-segment SHA + every word checked, offsets from PT_LOAD) NOPs the avatar-readiness
+wait (0x4b2dbc), RETs the avatar renderer (0x4b2adc), renames `cache/shader_cache` → `cache/br_shader_v1`. GL shim
+(now also exports glShaderSource/glLinkProgram/glProgramBinary/glDeleteProgram/glDraw*: pass-through unless a setting
+is on) `gl_int_attribs` (integer inputs fed via glVertexAttribPointer re-set with glVertexAttribIPointer per draw,
+reflection cached per EGL context + program, dropped on link/binary/delete) and `gl_highp_markers` (vertex shaders with
+every '|' marker: mediump→highp except on in/out/uniform lines); host test `tests/test_blazerush.py` with a stand-in
+GL. FOV: the game reads VrApi props 7/8 right after vrapi_Initialize (no session; the Frame has no
+XR_EPIC_view_configuration_fov) → the bridge saves the live FOV (also located before tracking, headless: 118.87×120.04
+on the dev Frame) in `files/framebridge-vrapi-fov.txt` and answers with it at the next start (log `FOV properties: …
+(saved by an earlier session)`). `device.config_sync` (catalog field `config_sync`, agent v78): user_config.xml
+r_3dwidth/height, r_width/height from the runtime eye size (FrameBridge logs `runtime recommended eye size`) × scale,
+written at finalize, set_settings and by launch.sh before Lepton starts (`_config_sync`). Headless runs at scale 1.7
+end in `zink: DEVICE LOST` right after the bridge's 30 s no-tracking deadline tears the session down (gpu fault at the
+teardown; not at scale 1.0): a headless-only artifact, the headset never hits that deadline. Launch tests count an exit/crash after
+such a line as a pass (triage.yaml `headless_end`, finding `headless-end`; GitHub #57 "Failed to launch" on install).
 **Session triage (agent v70, 2026-10-09):** launch tests never reach FOCUSED, so real play sessions are triaged
 too. list_installed gives each game `last_play` {start, end, test} from `<anchor>/plays.log` (launch tests write a
 `test <unix>` line first → test sessions are only marked); `session_log` returns the newest session's launch.log
@@ -738,6 +895,10 @@ up to 4 s for the link file to be taken before trusting the heartbeat, the windo
 `gui.alive`, and the Windows command runs under `conhost.exe --headless` (plain `-WindowStyle Hidden` flashed a
 console). Screens: `scripts/ui_smoke.py --links --fake-frame --game <pkg>` (tall pages: `--viewport
 1280x7000`; Flutter's popup menu ignores Escape).
+Demo link: the homepage's example button = `deeplink.DEMO_MANIFEST` (https://frameport.app/demo/cool-game.json, published
+from site/public/demo/); every form (https button page, frameport://, framedrop://, pasted) → `InstallRequest.demo`,
+no network (fetch_manifest returns `demo_manifest()`, download refuses), `link_dialog.show_demo` (Install =
+`easter.demo_install`: Cool Game's cover out of the portal; eggs off → "Nice, it works!"), CLI just says so.
 
 ## Releases, CI, GitHub
 Maintainer-only notes (accounts, credentials, key locations) live in the git-ignored `CLAUDE.local.md`.
@@ -828,5 +989,7 @@ the unresolved eye distortion, and testing the release bundles on real Windows/m
   fallback (`core/cache.py`). Don't hardcode what can be discovered (e.g. Lepton path via appmanifests).
 - Keep APK edits minimal and byte-stable (parity depends on it). Every new fix: a patch module + a triage signature +
   a PLAYBOOK row + a unit test.
+- New or changed patch, game setting, catalog recipe or triage signature → run `python scripts/patch_docs.py`
+  (regenerates docs/PATCHES.md + site/src/data/patches.json, the site's id → anchor map; a test runs `--check`).
 - Known-good backups of every working APK and the signing keys: `PATCHED/_known-good-2026-09-28/` (don't delete).
 - Your development Frame: `frameport frame info` (remembered in `<user data>/frames.json`); SSH as `steamos@<frame>`.

@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .models import Analysis, Recipe
-from .paths import user_data_dir, write_atomic
+from .paths import localize, user_data_dir, write_atomic
 
 # One lock for every read-modify-write of library.json: jobs, the poll thread and the UI all change it, and a change
 # made between another thread's load() and save() would be lost. Re-entrant so edit() can call load()/save().
@@ -28,7 +28,7 @@ _updating = threading.local()  # set while load() runs the migrations/catalog st
 def load() -> dict:
     with _lock:
         try:
-            data = json.loads(_path().read_text(encoding="utf-8"))
+            data = localize(json.loads(_path().read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return {"games": {}, "settings": {}}
         # The catalog step loads the catalog, whose first load reads a setting: that nested load() must not run the

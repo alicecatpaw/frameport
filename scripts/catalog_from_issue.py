@@ -1,4 +1,4 @@
-"""Turn a "Working configuration" issue (.github/ISSUE_TEMPLATE/working-config.yml) into catalog/games/<pkg>.yaml.
+"""Turn a "Working recipe" issue (.github/ISSUE_TEMPLATE/working-config.yml) into catalog/games/<pkg>.yaml.
 
 Used by .github/workflows/catalog-from-issue.yml after a maintainer labels the issue `catalog-accepted`; can also be
 run by hand:  gh issue view 12 --json body -q .body | python scripts/catalog_from_issue.py --issue 12
@@ -25,7 +25,7 @@ LIST_FIELDS = {"overport_extra", "overport_remove", "alt_overport", "frame", "fr
                "device"}
 # FramePort's own patch ids must exist (OVRPort's are listed by its CLI at runtime, so not checked here)
 OWN_PATCH_FIELDS = ("frame", "frame_remove", "pcvr", "pcvr_remove", "device")
-DICT_FIELDS = {"adapter", "device_files", "lepton_env", "proton_env", "verified"}
+DICT_FIELDS = {"adapter", "device_files", "config_sync", "lepton_env", "proton_env", "verified"}
 ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,80}$")
 
 
@@ -77,7 +77,7 @@ def validate(d: dict) -> CatalogEntry:
     for k in DICT_FIELDS & set(d):
         if not isinstance(d[k], dict):
             raise Invalid(f"{k} must be a mapping")
-    for k in ("device_files",):
+    for k in ("device_files", "config_sync"):
         for path in (d.get(k) or {}):
             if not isinstance(path, str) or path.startswith("/") or ".." in Path(path).parts:
                 raise Invalid(f"{k}: bad path {path!r}")

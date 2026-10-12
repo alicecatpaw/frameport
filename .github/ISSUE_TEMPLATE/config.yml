@@ -1,1 +1,8 @@
 blank_issues_enabled: true
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/spoopyghosty0/frameport/discussions
+    about: Setup help, how-to questions and feature ideas go to Discussions.
+  - name: Docs and FAQ
+    url: https://frameport.app/docs/
+    about: Install steps, game folder layouts and common questions.

@@ -1,0 +1,72 @@
+# The project page (site/, Astro) on GitHub Pages: https://frameport.app/
+# Rebuilt when the site, the docs it renders, the catalog or the showcase renders change on main, when a release is
+# published, and once a day (contributors, releases and the games board stay fresh). The games board also refreshes
+# itself from the catalog on main in the visitor's browser, so a catalog change shows before the next build.
+# One-time setup: Settings → Pages → Source: GitHub Actions; custom domain frameport.app (kept in the settings, not a
+# CNAME file: GitHub ignores that file for Actions deployments).
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/*.md'
+      - 'catalog/games/**'
+      - 'bootstrap/setup.sh'
+      - 'docs/images/**'
+      - 'docs/media/**'
+      - 'docs/badges/**'
+      - 'src/frameport/ui/icons/**'
+      - '.github/workflows/pages.yml'
+  release:  # the changelog page shows every release (CI's own releases start this through workflow_dispatch)
+    types: [published]
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - uses: actions/configure-pages@v6
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg  # the video tiles' short previews
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # the contributors list (higher API limit)
+          # analytics (Settings → Secrets and variables → Actions → Variables); unset = none on the site
+          PUBLIC_CF_ANALYTICS_TOKEN: ${{ vars.CF_ANALYTICS_TOKEN }}
+          PUBLIC_GA_ID: ${{ vars.GA_MEASUREMENT_ID }}
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -28,7 +28,11 @@ IL2CPP_METADATA = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
 # 6: gl_multiview_libs (own-engine libraries with OVR_multiview GLSL: frame.gl_multiview_fbo) (2026-10)
 # 7: unreal_thumb_touch (UE4 OculusInput's ThumbUp from near-touch, matched exactly: frame.unreal_thumb_touch)
 # 8: media_codec (plays video through Android's decoders: MediaCodec/ExoPlayer/Media3 or VLC: frame.hw_video_decode)
-ANALYSIS_VERSION = 8
+# 9: gamepad (the manifest declares gamepad support: android.hardware.gamepad / Android TV's LEANBACK_LAUNCHER:
+#    device.steam_gamepad) (2026-10)
+# 10: godot_clipboard (Godot 4.2-4.4's non-null ClipboardManager cast: frame.godot_clipboard) (2026-10)
+# 11: unreal_verify_obb (Unreal's bVerifyOBBOnStartUp: frame.unreal_skip_obb_check, GitHub #159) (2026-10)
+ANALYSIS_VERSION = 11
 
 
 # Android versions by API level (for messages); the Frame's Lepton container runs Android 11 (API 30)
@@ -58,6 +62,15 @@ UE_OBB_KEY = ".GameActivity.bHasOBBFiles"  # com.epicgames.ue4.… (UE4) / com.e
 def expects_obb(meta: dict) -> bool:
     """Unreal packaged the game's content as an OBB (expansion file) and opens it at start."""
     return any(k.endswith(UE_OBB_KEY) and v in (True, "true", "True") for k, v in meta.items())
+
+
+UE_VERIFY_OBB_KEY = ".GameActivity.bVerifyOBBOnStartUp"
+
+
+def unreal_verify_obb(meta: dict) -> bool:
+    """Unreal's DownloaderActivity checks every OBB entry's CRC at the first start (a full read; on a mismatch it waits
+    on an error screen). Only a real boolean counts: GameActivity reads it with Bundle.getBoolean."""
+    return any(k.endswith(UE_VERIFY_OBB_KEY) and v is True for k, v in meta.items())
 
 
 def _read_manifest_info(path: Path):
@@ -150,6 +163,9 @@ def vr_kind(libs: set[str], manifest_strings: list[str]) -> str:
     return "none"
 
 
+# Kotlin's message for a failed non-null cast to ClipboardManager (Godot 4.2-4.4; 4.1 is Java, 4.5+ uses `as?`)
+GODOT_CLIPBOARD_CAST = b"null cannot be cast to non-null type android.content.ClipboardManager"
+
 # dex type names of Android's video decoding APIs (frame.hw_video_decode)
 MEDIA_CODEC_MARKERS = (b"Landroid/media/MediaCodec;", b"Landroidx/media3/exoplayer", b"Lcom/google/android/exoplayer2/")
 
@@ -169,6 +185,8 @@ def analyze(path: Path, deep: bool = True, data_bytes: int | None = None) -> Ana
         # SDL's Java side (SDL2 / LÖVE apps): crashes in Lepton without a clipboard service (frame.sdl_clipboard)
         dexes = [z.read(n) for n in names if n.startswith("classes") and n.endswith(".dex")]
         sdl_java = any(b"Lorg/libsdl/app/SDLClipboardHandler;" in d for d in dexes)
+        # Godot 4.2-4.4's Kotlin `as ClipboardManager` (non-null cast): the same crash (frame.godot_clipboard)
+        godot_clipboard = any(b"Lorg/godotengine/godot/Godot;" in d and GODOT_CLIPBOARD_CAST in d for d in dexes)
         # Vivox voice chat calling Android 12 audio-routing methods: crashes in Lepton (Android 11)
         vivox_api31 = any(b"Lcom/vivox/sdk/AudioChangeListener;" in d and b"CommunicationDevice" in d for d in dexes)
         # video through Android's decoders (frame.hw_video_decode): Java MediaCodec, ExoPlayer/Media3, or libVLC
@@ -292,8 +310,11 @@ def analyze(path: Path, deep: bool = True, data_bytes: int | None = None) -> Ana
             # Meta's OVRManager raises MSAA at runtime (frame.unity_runtime_msaa_off); Oculus XR Plugin (multiview)
             "ovr_runtime_msaa": bool(il2cpp_meta) and b"\0useRecommendedMSAALevel\0" in il2cpp_meta,
             "sdl_java": sdl_java,
+            "godot_clipboard": godot_clipboard,
             "vivox_api31": vivox_api31,
             "media_codec": media_codec,
+            # declares gamepad support (SDL's manifest template has both): device.steam_gamepad
+            "gamepad": "android.hardware.gamepad" in features or axml.LEANBACK_LAUNCHER in cats,
             "oculus_xr_plugin": bool(il2cpp_meta) and b"\0m_StereoRenderingModeAndroid\0" in il2cpp_meta,
             "meta_depth_occlusion": bool(il2cpp_meta) and (b"HARD_OCCLUSION" in il2cpp_meta or b"SOFT_OCCLUSION" in il2cpp_meta),
             # Unity's built-in Oculus support checks for Meta's system apps before VR (frame.unity_oculus_check)
@@ -309,6 +330,8 @@ def analyze(path: Path, deep: bool = True, data_bytes: int | None = None) -> Ana
             # scene in one: without it the game hangs at start (GitHub #85, #92)
             "expects_obb": expects_obb(meta) or unity_split,
             "unity_split": unity_split,
+            # Unreal CRC-checks the OBB before the game starts (frame.unreal_skip_obb_check, GitHub #159)
+            "unreal_verify_obb": unreal_verify_obb(meta),
             # Unreal's Oculus module needs every OVRPlugin function it looks up (frame.unreal_ovrp_entrypoints)
             "unreal_ovrp_lookups": (ovrp_lookups(lib_bytes.get(engine_lib.rsplit("/", 1)[1], b""))
                                     if engine_lib and "libOVRPlugin.so" in libset else []),

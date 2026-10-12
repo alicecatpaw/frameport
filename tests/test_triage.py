@@ -301,3 +301,63 @@ def test_lepton_lines_survive_the_game_filter():
     assert any("FrameBridge" in ln for ln in lines)
     res = triage.triage(log, "RUNNING", package="com.x.y")
     assert "container-not-started" not in [f.id for f in res.findings]
+
+
+def test_unity_data_missing_fails_the_launch_test():
+    """GitHub #155: Batman's launch test passed while Unity was stuck on a bundle missing from the data folder."""
+    from frameport.validate import triage
+
+    log = ("10-10 00:51:10.000  1  2 E Unity   : Unable to open archive file: /sdcard/Android/obb/com.camouflaj.manta/"
+           "localization-assets-french(france)(fr-fr)_assets_all.bundle\n"
+           "10-10 00:51:20.000  1  2 I FrameBridge: pacing: 72.0 fps\n")
+    r = triage.triage(log, "RUNNING")
+    assert "unity-data-missing" in [f.id for f in r.findings] and r.verdict == "fail"
+
+
+def test_webview_helper_exit_is_not_a_force_quit():
+    """GitHub #179: Android's WebView helper exits at every container boot; the game itself never started."""
+    log = """
+10-11 05:09:26.499   220   249 I ActivityManager: Start proc 367:WebViewLoader-arm64-v8a/1037
+10-11 05:09:26.546   220   249 I ActivityManager: Start proc 397:com.android.networkstack.process/1073 for service
+10-11 05:09:26.579   367   367 I WebViewLoader-: System.exit called, status: 0
+LeptonProcessObserver: Target app (com.example.game) did not start.
+"""
+    res = triage(log, "EXITED", package="com.example.game")
+    ids = [f.id for f in res.findings]
+    assert "force-quit" not in ids and "app-not-started" in ids
+    assert "App process started" not in res.milestones
+    # a real System.exit from the game still counts
+    real = "09-28 17:39:01.000  1000  1000 I ActivityManager: Start proc 1150:com.example.game/u0a55 for activity\n" \
+           "09-28 17:39:05.000  1150  1150 I GameActivity: System.exit called, status: 0\n"
+    assert "force-quit" in [f.id for f in triage(real, "EXITED", package="com.example.game").findings]
+
+
+HEADLESS_END = """
+10-11 16:35:09.900  1000  1000 I ActivityManager: Start proc 1192:ru.targem.blazerush/u0a14 for activity
+10-11 16:35:12.282  1192  1222 I FrameBridge: xrCreateInstance result=0
+10-11 16:35:18.219  1192  1222 I FrameBridge: pacing: 68.7 fps, displayTime vs predicted: avg 0.00 ms, max 0.00 ms
+10-11 16:35:38.316  1192  1222 I FrameBridge: pacing: 72.2 fps, displayTime vs predicted: avg 0.00 ms, max 0.00 ms
+10-11 16:35:43.150  1192  1222 I OVRPortVrApi: EnterVrMode: no tracked head pose before deadline
+10-11 16:35:52.086  1192  1248 E MESA    : zink: DEVICE LOST!
+10-11 16:35:52.087  1192  1248 F libc    : Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x1a08
+"""
+
+
+def test_crash_after_the_headless_tracking_deadline_passes_a_launch_test():
+    """BlazeRush (GitHub #57): its launch test failed on the GPU crash that follows the VrApi bridge ending the session
+    for lack of a worn headset; that never happens in the headset."""
+    r = triage(HEADLESS_END, "EXITED", "ru.targem.blazerush", headless=True)
+    assert r.verdict == "pass" and r.headless_end
+    assert [f.id for f in r.findings] == ["headless-end"] and r.findings[0].severity == "info"
+    assert "zink-device-lost" in r.findings[0].diagnosis
+    # a play session (not headless) keeps the crash
+    assert triage(HEADLESS_END, "EXITED", "ru.targem.blazerush").verdict == "fail"
+    # a crash before the deadline still fails
+    early = HEADLESS_END.replace("16:35:52.08", "16:35:40.08")
+    early_lines = early.strip().splitlines()
+    early = "\n".join(early_lines[:4] + early_lines[5:] + early_lines[4:5])
+    r = triage(early, "EXITED", "ru.targem.blazerush", headless=True)
+    assert r.verdict == "fail" and {"zink-device-lost", "native-crash"} <= {f.id for f in r.findings}
+    # no frames before the deadline: the game never ran
+    no_frames = "\n".join(ln for ln in HEADLESS_END.splitlines() if "pacing:" not in ln)
+    assert triage(no_frames, "EXITED", "ru.targem.blazerush", headless=True).verdict == "fail"

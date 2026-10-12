@@ -1,0 +1,91 @@
+---
+import Wordmark from './Wordmark.astro';
+import Contributors from './Contributors.astro';
+import { REPO, REPORT_PROBLEM, url } from '../data/site';
+
+// "all" = the "Built on" section with the projects and the contributors (the homepage), "contributors" = only the
+// contributors (What's new), none by default (docs, download, privacy, 404 and the other utility pages)
+interface Props { credits?: 'all' | 'contributors' | false }
+const { credits = false } = Astro.props;
+// each project named links to its own page (Lepton has none of its own: it links to Waydroid, which it is built on)
+type Part = [name: string, href?: string];
+const builtOn: { parts: Part[]; what: string }[] = [
+  { parts: [['OVRPort', 'https://github.com/Android-XR-Bridge/OVRPort']], what: 'makes Quest games run on other headsets' },
+  { parts: [['Valve Lepton'], ['Waydroid', 'https://waydro.id'], ['Proton', 'https://github.com/ValveSoftware/Proton'],
+    ['SteamVR', 'https://store.steampowered.com/app/250820/SteamVR/']],
+    what: "run Android apps, Windows programs and VR on the Frame" },
+  { parts: [['Revive', 'https://github.com/LibreVR/Revive']], what: 'runs Oculus PC games on SteamVR' },
+  { parts: [['Mesa (Zink)', 'https://docs.mesa3d.org/drivers/zink.html']], what: 'graphics for older games' },
+  { parts: [['Khronos OpenXR SDK', 'https://github.com/KhronosGroup/OpenXR-SDK']], what: 'the VR standard the Frame uses' },
+  { parts: [['Eclipse Temurin', 'https://adoptium.net'], ['Android apksigner', 'https://developer.android.com/tools/apksigner'],
+    ['NDK', 'https://developer.android.com/ndk']], what: 'the build tools' },
+  { parts: [['Flet', 'https://flet.dev']], what: "the app's interface" },
+  { parts: [['OculusDB', 'https://oculusdb.rui2015.me'], ['Steam store data', 'https://store.steampowered.com']], what: 'artwork and game details' },
+];
+/** "a", "a and b", "a, b and c" */
+const joiner = (i: number, n: number) => (i === 0 ? '' : i === n - 1 ? ' and ' : ', ');
+---
+{credits === 'contributors' && (
+  <section class="section credits" id="contributors">
+    <div class="wrap"><Contributors /></div>
+  </section>
+)}
+{credits === 'all' && (
+  <section class="section credits" id="credits">
+    <div class="wrap">
+      <div class="head reveal">
+        <p class="label"><b>07</b> Built on</p>
+        <h2>Built on open source, by its users</h2>
+        <p class="lead">FramePort brings these projects together and adds what the Frame needs.
+          <a href={url('docs/architecture/')}>What FramePort adds</a></p>
+      </div>
+      <ul class="built reveal">
+        {builtOn.map((b) => (
+          <li><span class="ns">{b.parts.map(([name, href], i) => (
+            <>{joiner(i, b.parts.length)}{href ? <a href={href}>{name}</a> : <span class="n">{name}</span>}</>
+          ))}</span> <span class="w">{b.what}</span></li>
+        ))}
+      </ul>
+      <Contributors />
+    </div>
+  </section>
+)}
+<footer class="footer">
+  <div class="wrap foot-in">
+    <div class="foot-brand">
+      <Wordmark id="foot" href={url()} />
+      <p>GPL-3.0-only (includes GPL-3.0 code from OVRPort). Not affiliated with Valve or Meta.</p>
+      <p class="tm">Meta Quest is a trademark of Meta Platforms, Inc. Steam and Steam Frame are trademarks of Valve
+        Corporation. Neither company makes or endorses FramePort.</p>
+    </div>
+    <nav class="foot-links" aria-label="Project">
+      <a href={REPO}>Source code</a>
+      <a href={url('changelog/')}>What's new</a>
+      <a href={url('docs/')}>Docs</a>
+      <a href={REPORT_PROBLEM}>Report a problem</a>
+      <a href={url('install/')}>Install links</a>
+      <a href={url('privacy/')}>Privacy</a>
+      {import.meta.env.PUBLIC_GA_ID && <a href={url('privacy/')} data-cookie-settings>Cookie settings</a>}
+    </nav>
+  </div>
+</footer>
+
+<style>
+  .built { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 0 40px; }
+  .built li { display: grid; gap: 2px; padding: 14px 0; border-top: 1px solid var(--border); }
+  .built a, .built .n { font-weight: 600; color: var(--text); text-decoration-color: rgba(255, 138, 31, 0.5); }
+  .built a:hover { color: var(--accent); }
+  .built .ns { color: var(--text-2); }
+  .built .w { color: var(--text-2); font-size: 14px; }
+
+  .footer { position: relative; background: var(--sidebar); padding: 40px 0 48px; }
+  .footer::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--portal); opacity: .6; }
+  .foot-in { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 24px; align-items: flex-start; }
+  .foot-brand { display: grid; gap: 12px; }
+  .foot-brand p { color: var(--text-2); font-size: 13px; max-width: 46ch; }
+  .foot-brand .tm { color: var(--text-2); font-size: 12px; max-width: 70ch; }
+  .foot-links { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 14px; }
+  .foot-links a { color: var(--text-2); text-decoration: none; }
+  .foot-links a:hover { color: var(--text); text-decoration: underline; }
+</style>

@@ -115,7 +115,7 @@ def test_gpu_hang_from_kernel_lines():
     kernel = "kernel: 1790000000.0 steamos kernel: msm_dpu: [drm:a6xx_hangcheck] hangcheck detected gpu lockup\n"
     r = triage(START, "UNKNOWN", PKG, kernel=kernel)
     f = next(f for f in r.findings if f.id == "gpu-hang")
-    assert f.report and f.suggest == ["adapter.zink_shader_dump"] and f.severity == "fatal"
+    assert f.report and f.suggest == ["adapter.vk_shader_dump", "adapter.zink_shader_dump"] and f.severity == "fatal"
     assert "gpu-hang" not in {f.id for f in triage(START + "hangcheck in an app's own log\n", "UNKNOWN", PKG).findings}
 
 
@@ -255,13 +255,22 @@ def test_last_session_callout():
                        finding("dlopen-failed", "info", diagnosis="noise")]}
     view.g = {"package": PKG, "last_session": ls}
     texts = _texts(view.session_callout())
-    assert "Did textures flicker?" in texts and "Yes, fix it" in texts and "Try this fix" in texts
+    assert "Did textures flicker?" in texts and "Yes, fix it" in texts and "Try this setting" in texts
     assert "Report a problem…" in texts and "noise" not in texts and any("61.5 fps" in t for t in texts)
     view.g = {"package": PKG, "last_session": {**ls, "applied": ["adapter.scale=0.85"],
                                                "answered": ["space-warp-used"]}}
     texts = _texts(view.session_callout())
-    assert "Did textures flicker?" not in texts and "Try this fix" not in texts
+    assert "Did textures flicker?" not in texts and "Try this setting" not in texts
     view.g = {"package": PKG, "last_session": {**ls, "dismissed": True}}
     assert view.session_callout() is None
     view.g = {"package": PKG, "last_session": {"findings": [ls["findings"][3]]}}
     assert view.session_callout() is None  # nothing worth showing
+
+
+def test_suggestions_that_cant_matter_for_the_game_are_dropped():
+    """GitHub #138: a Vulkan game (AC Nexus) was offered the GLES-only 360° emulation."""
+    add_game()
+    library.update_game(PKG, lambda e: e["analysis"].update(graphics="Vulkan"))
+    assert pipeline.useful_suggestions(PKG, ["adapter.equirect_emul", "adapter.scale=0.85"]) == ["adapter.scale=0.85"]
+    library.update_game(PKG, lambda e: e["analysis"].update(graphics="GLES3"))
+    assert pipeline.useful_suggestions(PKG, ["adapter.equirect_emul"]) == ["adapter.equirect_emul"]

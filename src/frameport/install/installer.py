@@ -113,11 +113,24 @@ def install(frame: Frame, plan: InstallPlan, reporter: Reporter) -> dict:
         apk_name=plan.apk.name, settings=ctx.adapter_settings,
         files={k: v.decode() if isinstance(v, bytes) else v for k, v in ctx.files.items()}, env=ctx.env,
         obb_manifest=manifest or None, flatscreen=show_window(ctx, _flatscreen(plan.package)),
+        config_sync=ctx.config_sync or None,
         recipe={"patches": sorted(plan.recipe.patches), "source": plan.recipe.source, "alt": plan.recipe.use_alt},
     )
     reporter.log(f"installed at {result['base']} (Steam shortcut id {result['appid']})")
     log_controller_models(result.get("controller_models"), reporter)
+    log_config_sync(result.get("config_sync"), reporter)
     return result
+
+
+def log_config_sync(report: dict | None, reporter: Reporter) -> None:
+    """What the agent did to the game's saved settings (device.config_sync)."""
+    if not report:
+        return
+    if report.get("changed"):
+        reporter.log("game settings kept in step with the eye buffers: " + ", ".join(
+            f"{k} {old} -> {new}" for k, (old, new) in sorted(report["changed"].items())))
+    elif report.get("skipped"):
+        reporter.log(f"game settings not changed: {report['skipped']}")
 
 
 def log_controller_models(models: dict | None, reporter: Reporter) -> None:
@@ -141,6 +154,7 @@ class PcvrPlan:
     revive_version: str | None = None
     art_lookup: str | None = None  # package whose store art to use
     dest: str | None = None
+    overlay: dict | None = None  # a SteamVR overlay app: the agent's overlay argument (analysis/vroverlay.py)
 
 
 def install_pcvr(frame: Frame, plan: PcvrPlan, reporter: Reporter) -> dict:
@@ -211,10 +225,25 @@ def install_pcvr(frame: Frame, plan: PcvrPlan, reporter: Reporter) -> dict:
         game_args=game_args(plan.recipe), no_crash_reporter="pcvr.no_crash_reporter" in plan.recipe.patches,
         libovr_redirect="pcvr.libovr_redirect" in plan.recipe.patches,
         exe_sha256=plan.exe_sha256, revive_version=plan.revive_version, vr=not is_flat_windows(plan.package),
-        recipe={"patches": sorted(plan.recipe.patches), "source": plan.recipe.source},
+        recipe={"patches": sorted(plan.recipe.patches), "source": plan.recipe.source}, overlay=plan.overlay,
     )
     reporter.log(f"installed at {result['base']} (Proton {result['proton']}, Steam shortcut id {result['appid']})")
+    log_overlay(result.get("overlay"), reporter)
     return result
+
+
+def log_overlay(overlay: dict | None, reporter: Reporter) -> None:
+    """Outcome of registering a SteamVR overlay app on the Frame (agent register_vr_overlay)."""
+    if not overlay:
+        return
+    if overlay.get("registered"):
+        reporter.check("SteamVR overlay app", True, f"registered with SteamVR as {overlay.get('key')}"
+                       + (", starts with SteamVR" if overlay.get("autostart") else ""))
+    elif overlay.get("error") == "steamvr":
+        reporter.check("SteamVR overlay app", None, "SteamVR isn't running on the Frame: registered at the next "
+                                                    "connection")
+    else:
+        reporter.check("SteamVR overlay app", False, f"SteamVR didn't take it: {overlay.get('error')}")
 
 
 @dataclass
@@ -229,6 +258,7 @@ class LinuxPlan:
     x86_64: bool = False  # runs through FEX (installed on the Frame first, like Proton)
     dest: str | None = None  # a drive's install dir for a new install (GitHub #90); None = internal storage
     desktop_entry: bool = True  # an entry in Desktop Mode's menu and on its desktop (GitHub #84)
+    overlay: dict | None = None  # a SteamVR overlay app: the agent's overlay argument (analysis/vroverlay.py)
 
 
 def install_linux(frame: Frame, plan: LinuxPlan, reporter: Reporter) -> dict:
@@ -261,8 +291,9 @@ def install_linux(frame: Frame, plan: LinuxPlan, reporter: Reporter) -> dict:
     result = frame.agent("finalize_linux", package=plan.package, title=plan.title, exe=plan.exe,
                          appimage=plan.appimage, openxr=plan.openxr, x86_64=plan.x86_64, manifests={"app": manifest},
                          executables=executables, tags=_tags(plan.package), dest=plan.dest,
-                         desktop_entry=plan.desktop_entry, timeout=900)
+                         desktop_entry=plan.desktop_entry, overlay=plan.overlay, timeout=900)
     reporter.log(f"installed at {result['base']} (Steam shortcut id {result['appid']})")
+    log_overlay(result.get("overlay"), reporter)
     apply_app_icon(frame, plan.package, prep.get("anchor"), result, reporter)
     if result.get("desktop_entry"):
         reporter.check("Desktop Mode entry", True, "in the application menu"
@@ -472,9 +503,11 @@ def apply_app_icon(frame: Frame, package: str, anchor: str | None, result: dict,
     reporter.check("App icon", True, "the app's own icon is used for the library")
 
 
-def update_steam_art(frame: Frame, package: str, reporter: Reporter) -> dict:
+def update_steam_art(frame: Frame, package: str, reporter: Reporter, title: str | None = None) -> dict:
     """Replace an installed game's Steam library art with the current artwork (after the user picked new art):
-    the art set goes to the game's anchor, then the shortcut is rewritten (Steam restarts once)."""
+    the art set goes to the game's anchor, then the shortcut is rewritten (Steam restarts once). `title`: the game's
+    name in the library; a different name on the Frame is renamed first (agent v77 `rename`: the shortcut keeps its
+    appid, so Play, grid art and saves stay). Placeholder art shows the name, so it's sent again too."""
     from ..artwork.steam import steam_set_for
 
     dep = next((d for d in frame.agent("list_installed")["games"] if d.get("package") == package), None)
@@ -482,8 +515,16 @@ def update_steam_art(frame: Frame, package: str, reporter: Reporter) -> dict:
         raise RuntimeError(f"{package} isn't installed on the Frame")
     if not dep.get("anchor"):
         raise RuntimeError("the Frame's FramePort agent is too old; reinstall the game to update its art")
+    renamed = False
+    if title and dep.get("title") != title:
+        reporter.stage("Name in the Steam library")
+        res = frame.agent("rename", package=package, title=title, shortcuts=False)
+        renamed = bool(res.get("renamed"))
+        reporter.check("Name", True, f"{dep.get('title')} -> {res.get('title')} (shortcut {res.get('appid')} kept)")
     art = steam_set_for(package)
     if not art:
+        if renamed:
+            return add_to_steam(frame, [package], reporter)
         raise RuntimeError("no artwork to send")
     reporter.stage("Artwork for the Steam library")
     remote = posixpath.join(dep["anchor"], "artwork")

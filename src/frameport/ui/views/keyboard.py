@@ -14,10 +14,21 @@ import flet as ft
 from ...errors import explain
 from ...i18n import tr
 from .. import components as C
+from .. import glyphs as G
 from .. import theme as T
 
 if TYPE_CHECKING:
     from ..app import FramePortApp
+
+
+def keyboard_tips() -> list[tuple[str, str, str]]:
+    """How typing on the Frame works (its empty state, and tips under the typing box)."""
+    return [(ft.Icons.TOUCH_APP_ROUNDED, tr("Pick the field in the headset"),
+             tr("Select a text field in the game first.")),
+            (G.KEYS, tr("Every key goes through"),
+             tr("Letters, Enter, Backspace, arrows, Esc and shortcuts reach the headset.")),
+            (ft.Icons.CONTENT_PASTE_ROUNDED, tr("Paste long text"),
+             tr("Put a password, link or note in the box and press Type it."))]
 
 
 class KeyboardView:
@@ -30,7 +41,10 @@ class KeyboardView:
         self.root = None
         self.status = C.meta("")
         self.last = ft.Text("", size=T.px(28), weight=ft.FontWeight.W_600, color=T.ACCENT)
-        hint = C.body(tr("Click here, then type. Everything you type goes to the Frame (Esc and shortcuts too)."),
+        from .. import easter
+
+        self._typed = easter.Typed()  # (easter egg: type "hello" and a little headset waves back)
+        hint = C.body(tr("Click here, then type. Every key goes to the Frame."),
                       T.TEXT)
         self.pad = ft.Container(ft.Column([hint, self.last], spacing=T.S2,
                                           horizontal_alignment=ft.CrossAxisAlignment.CENTER),
@@ -39,20 +53,21 @@ class KeyboardView:
                                 on_click=lambda e: self.focus_keys())
         self.listener = ft.KeyboardListener(self.pad, autofocus=True, on_key_down=self._forward("down"),
                                             on_key_up=self._forward("up"), on_key_repeat=self._forward("repeat"))
-        self.paste = ft.TextField(hint_text=tr("Or paste text to type it in one go"), expand=True, dense=True,
-                                  border_color=T.BORDER, on_submit=self._send_text)
+        self.paste = C.field(hint_text=tr("Or paste text to type it in one go"), expand=True,
+                             on_submit=self._send_text)
         self.reconnect = C.secondary(tr("Reconnect"), ft.Icons.REFRESH_ROUNDED, lambda e: self.start())
 
     # ---------------------------------------------------------------- building
     def mount(self) -> ft.Control:
         app = self.app
-        heading, sub = tr("Type on Frame"), tr("Use this computer's keyboard on the Frame")
+        heading, sub = tr("Type on Frame"), tr("Use this PC's keyboard on the Frame")
         if not (app.target and app.frame_state == "connected"):
             return ft.Column([
                 app.top_bar(heading, sub),
-                C.empty_state(ft.Icons.KEYBOARD_ROUNDED, tr("Connect your Frame first"),
-                              tr("Typing on the Frame works once FramePort is connected to it."),
-                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")))], expand=True)
+                C.empty_state(G.KEYS, tr("Type in VR with your PC's keyboard"),
+                              tr("Connect to your Steam Frame to type into the headset from here."),
+                              C.primary(tr("Connect"), ft.Icons.LINK_ROUNDED, lambda e: app.go("frame")),
+                              features=keyboard_tips())], expand=True)
         if self.root is None:
             self.root = ft.Column([
                 app.top_bar(heading, sub),
@@ -60,12 +75,14 @@ class KeyboardView:
                     ft.Row([self.status, self.reconnect], spacing=T.S3,
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     self.listener,
-                    ft.Row([self.paste, C.secondary(tr("Type it"), ft.Icons.SEND_ROUNDED, self._send_text)],
+                    ft.Row([self.paste, C.secondary(tr("Type it"), ft.Icons.SEND_OUTLINED, self._send_text)],
                            spacing=T.S2),
+                    ft.Row([C.meta(tr("In the headset, select a text field, then type here."), T.TEXT_2),
+                            C.help_icon("type_on_frame", 16)], spacing=T.px(2), tight=True,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ], spacing=T.S3)),
-                C.callout(tr("This computer's keyboard works as a keyboard on your Frame while this tab is open. In "
-                             "the headset, select a text field (in a game or app, in Steam or on the desktop), then "
-                             "type here.")),
+                ft.Row([C.feature_card(*tip) for tip in keyboard_tips()], wrap=True, spacing=T.S3,
+                       run_spacing=T.S3, vertical_alignment=ft.CrossAxisAlignment.START),
             ], spacing=T.S4, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
         self.start()
         return self.root
@@ -131,9 +148,17 @@ class KeyboardView:
                 if s.key(e.key, action) and action == "down":
                     self.last.value = e.key if len(e.key) > 1 else e.key.upper()
                     C.update(self.last)
+                    self._hello(self._typed.key(e.key))
             except Exception as exc:  # noqa: BLE001 - the connection dropped
                 self._fail(exc)
         return handler
+
+    def _hello(self, said: bool) -> None:
+        """The text that just went to the Frame said hello: wave back (it went to the Frame all the same)."""
+        from .. import easter
+
+        if said and easter.enabled():
+            easter.wave_hello(self.app)
 
     def press(self, key: str) -> None:
         """Simulate a key press (ui_smoke screenshots)."""
@@ -146,12 +171,15 @@ class KeyboardView:
             pass
 
     def _send_text(self, e=None) -> None:
+        from .. import easter
+
         s, text = self.session, self.paste.value or ""
         if s is None or not text:
             return
 
         def work():
             skipped = s.text(text)
+            self._hello(easter.says_hello(text))
             self.paste.value = ""
             C.update(self.paste)
             self.focus_keys()

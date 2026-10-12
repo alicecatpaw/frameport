@@ -48,8 +48,8 @@ class FrameLeptonTarget(Target):
     def add_to_library(self, packages, reporter):
         return installer.add_to_steam(self.connect().frame, packages, reporter)
 
-    def update_steam_art(self, package, reporter):
-        return installer.update_steam_art(self.connect().frame, package, reporter)
+    def update_steam_art(self, package, reporter, title=None):
+        return installer.update_steam_art(self.connect().frame, package, reporter, title=title)
 
     def launch_test(self, package, reporter, seconds=45):
         return device.launch_test(self.connect().frame, package, reporter, seconds)
@@ -75,13 +75,13 @@ class FrameLeptonTarget(Target):
     def install_pcvr(self, package, title, game_dir, exe, recipe, reporter, **extra):
         plan = installer.PcvrPlan(package, title, Path(game_dir), exe, recipe, extra.get("revive_dir"),
                                   extra.get("exe_sha256"), extra.get("revive_version"), extra.get("art_lookup"),
-                                  dest=self.install_dest())
+                                  dest=self.install_dest(), overlay=extra.get("overlay"))
         return installer.install_pcvr(self.connect().frame, plan, reporter)
 
     def install_linux(self, package, title, root, exe, files, appimage, openxr, reporter, x86_64=False,
-                      desktop_entry=True):
+                      desktop_entry=True, overlay=None):
         plan = installer.LinuxPlan(package, title, Path(root), exe, files, appimage, openxr, x86_64,
-                                   dest=self.install_dest(), desktop_entry=desktop_entry)
+                                   dest=self.install_dest(), desktop_entry=desktop_entry, overlay=overlay)
         return installer.install_linux(self.connect().frame, plan, reporter)
 
     def drives(self) -> list[dict]:
@@ -94,6 +94,11 @@ class FrameLeptonTarget(Target):
     def set_desktop_entry(self, package: str, enabled: bool) -> dict:
         """A Linux app's Desktop Mode entry on or off (GitHub #84)."""
         return self.connect().frame.agent("desktop_entry", package=package, enabled=enabled)
+
+    def set_vr_overlay(self, package: str, autostart: bool) -> dict:
+        """An installed SteamVR overlay app's auto-start with SteamVR (agent >= 75; >= 76: FramePort's own
+        frameport-vr-overlays service starts it at every SteamVR start, kept by the agent from this flag)."""
+        return self.connect().frame.agent("register_vr_overlay", package=package, autostart=autostart)
 
     def proton_status(self, tool: str | None = None) -> dict:
         return self.connect().frame.agent("proton_status", tool=tool)

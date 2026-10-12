@@ -1,18 +1,41 @@
 package: ru.targem.blazerush
 title: BlazeRush
-status: unsupported
-notes: Starts and reaches the menu room, but the room shows no controllers and ignores all input (it all reaches
-  the game); no fix yet.
+status: works
+notes: From Klownicle's guide (GitHub issue 57); FramePort's version verified in a Steam Frame headset (2026-10-11).
+  Menus and racing controls, car bodies and controllers, particle effects, the full field of view and a sharp,
+  correctly placed picture.
+details: 'Seven fixes from the guide. frame.blazerush (this exact build only) skips the menus'' wait for a Meta avatar,
+  which never comes on the Frame, so the game creates its own controllers, and gives its shader cache a new folder
+  (cache/br_shader_v1) so programs compiled before the shader fixes aren''t reused. The GL shim feeds integer vertex
+  inputs (bone indices) as integers (gl_int_attribs: car bodies and controllers were invisible) and computes the
+  particle vertex shaders in highp (gl_highp_markers: streaks and flashes). The game reads the field of view once at
+  start, before tracking: the VrApi bridge answers with the FOV of the previous session (FramePort''s launch test
+  after the install is one), not 90x90 degrees. scale 1.7 keeps the wider view sharp (about 2.9x the pixels).
+  device.config_sync keeps the resolution saved in user_config.xml at the eye-buffer size, else the picture is
+  displaced with black borders after a scale change.'
 tested_version: 1.0.349
 engine: Other
 xr: VrApi
 frame:
 - frame.vrapi_bridge
 - frame.avatar_stub
+- frame.gl_shim
+- frame.blazerush
+adapter:
+  scale: 1.7
+  gl_int_attribs: 1
+  gl_highp_markers: in uvec2 inBoneIndices;|uniform InstanceData|void main()
+  gl_hide_multiview: 0
+  gl_hide_msrtt: 0
+config_sync:
+  user_config.xml:
+    r_3dwidth: w
+    r_3dheight: h
+    r_width: h*16/9
+    r_height: h
 verified:
-  date: '2026-10-06'
-  known_good_sha256: 7cbd5d4252788ccd3c95b5c1841dcc798ea029d687938c024e33bd698ba17671
-  app: 0.12.0
-updated: '2026-10-06'
-min_app: 0.12.0
+  date: '2026-10-11'
+  issue: 57
+updated: '2026-10-11'
+min_app: 1.0.0
 source_hint: BlazeRush

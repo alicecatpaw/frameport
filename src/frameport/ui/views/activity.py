@@ -15,13 +15,22 @@ from ..jobs import Job
 if TYPE_CHECKING:
     from ..app import FramePortApp
 
-CHECK_ICON = {True: (ft.Icons.CHECK_CIRCLE_ROUNDED, T.OK), False: (ft.Icons.CANCEL_ROUNDED, T.ERROR),
-              None: (ft.Icons.WARNING_AMBER_ROUNDED, T.WARN)}
-STATE_STYLE = {"queued": (ft.Icons.SCHEDULE_ROUNDED, T.TEXT_3, tr("Waiting")),
-               "running": (ft.Icons.SYNC_ROUNDED, T.ACCENT, tr("Working")),
-               "done": (ft.Icons.CHECK_CIRCLE_ROUNDED, T.OK, tr("Done")),
-               "failed": (ft.Icons.ERROR_ROUNDED, T.ERROR, tr("Failed")),
-               "cancelled": (ft.Icons.DO_NOT_DISTURB_ON_OUTLINED, T.TEXT_3, tr("Cancelled"))}
+CHECK_ICON: dict = {}
+STATE_STYLE: dict[str, tuple] = {}
+
+
+def _fill_styles() -> None:
+    """(Re)fill the maps with the active theme's colours, in place."""
+    CHECK_ICON.update({True: (ft.Icons.CHECK_CIRCLE_ROUNDED, T.OK), False: (ft.Icons.CANCEL_ROUNDED, T.ERROR),
+                       None: (ft.Icons.WARNING_AMBER_ROUNDED, T.WARN)})
+    STATE_STYLE.update({"queued": (ft.Icons.SCHEDULE_ROUNDED, T.TEXT_3, tr("Waiting")),
+                        "running": (ft.Icons.SYNC_ROUNDED, T.ACCENT, tr("Working")),
+                        "done": (ft.Icons.CHECK_CIRCLE_ROUNDED, T.OK, tr("Done")),
+                        "failed": (ft.Icons.ERROR_ROUNDED, T.ERROR, tr("Failed")),
+                        "cancelled": (ft.Icons.DO_NOT_DISTURB_ON_OUTLINED, T.TEXT_3, tr("Canceled"))})
+
+
+T.on_change(_fill_styles)
 
 
 def _dur(job: Job) -> str:
@@ -31,18 +40,14 @@ def _dur(job: Job) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
-
-def _progress_text(job: Job) -> str:
-    """Speed first: the line is ellipsized, and the file name matters least."""
-    return " · ".join(x for x in (job.speed, job.message) if x)
-
 class ActivityPanel:
     def __init__(self, app: FramePortApp):
         self.app = app
         self.expanded: set[int] = set()
         self.logs: set[int] = set()
         self._tiles: dict[int, tuple[tuple, ft.Control]] = {}  # job id -> (state key, tile)
-        self._live: dict[int, tuple] = {}  # running job id -> (progress bar, message, stage text, log text or None)
+        self._live: dict[int, tuple] = {}  # running job id -> (transit, log text or None)
+        self._transits: dict[int, C.Transit] = {}  # running job id -> its transit, kept across tile rebuilds
         # job id -> (log text, its scrolling column): kept across tile rebuilds so reading the log doesn't jump
         self._logviews: dict[int, tuple[ft.Text, ft.Column]] = {}
         self._lock = threading.Lock()  # refresh() runs from job threads and the UI thread
@@ -95,11 +100,9 @@ class ActivityPanel:
                 self._tiles[j.id] = cached
                 rebuilt = True
             elif running and j.id in self._live:
-                bar, msg, meta, log = self._live[j.id]
-                bar.value = j.fraction
-                msg.value = _progress_text(j)
-                meta.value = j.stage or ""
-                live += [bar, msg, meta]
+                transit, log = self._live[j.id]
+                transit.set(j, **self.app.transit_info(j))
+                live.append(transit.control)
                 if log is not None and len(j.log) != getattr(log, "_lines", -1):  # only when it grew
                     log.value = "\n".join(j.log[-400:])
                     log._lines = len(j.log)
@@ -119,6 +122,8 @@ class ActivityPanel:
             return
         self._layout = layout
         self._tiles = {j.id: self._tiles[j.id] for j in jobs}
+        self._transits = {jid: t for jid, t in self._transits.items()
+                          if any(j.id == jid and j.state == "running" for j in jobs)}
         self._logviews = {jid: v for jid, v in self._logviews.items() if jid in self._tiles}
         if self.app.jobs.paused == "frame":
             pinned.insert(0, self._paused_notice())
@@ -134,8 +139,7 @@ class ActivityPanel:
     def _paused_notice(self) -> ft.Control:
         return C.callout(ft.Column([
             C.body(tr("Waiting for your Frame"), T.TEXT, weight=ft.FontWeight.W_600),
-            C.body(tr("It can't be reached (asleep, turned off or out of Wi-Fi). Wake it or turn it on: FramePort "
-                      "continues by itself, and uploads pick up where they stopped."), T.TEXT_2),
+            C.body(tr("Can't reach the Frame. Wake it or turn it on; uploads resume by themselves."), T.TEXT_2),
             C.secondary(tr("Try now"), ft.Icons.REFRESH_ROUNDED,
                         lambda e: self.app.run_bg(lambda: self.app.retry_frame())),
         ], spacing=T.S2, horizontal_alignment=ft.CrossAxisAlignment.START), "warn", ft.Icons.WIFI_OFF_ROUNDED)
@@ -161,11 +165,10 @@ class ActivityPanel:
             icon, color, word = ft.Icons.WARNING_AMBER_ROUNDED, T.WARN, tr("Installed · launch test failed")
         running = job.state == "running"
         expanded = running or job.id in self.expanded
-        meta = C.meta(job.stage if running and job.stage else
-                      (job.error or word) + (f" · {_dur(job)}" if job.finished else ""),
-                      T.ERROR if job.state == "failed" else T.TEXT_2, max_lines=2)
+        meta = C.meta((job.error or word) + (f" · {_dur(job)}" if job.finished else ""),
+                      T.ERROR if job.state == "failed" else T.TEXT_2, max_lines=2, visible=not running)
         head = ft.Row([
-            ft.ProgressRing(width=T.px(18), height=T.px(18), stroke_width=T.px(2), color=T.ACCENT) if running
+            C.spinner() if running
             else ft.Icon(icon, color=color, size=T.px(20)),
             ft.Column([C.body(job.title, T.TEXT, weight=ft.FontWeight.W_600, max_lines=2,
                               overflow=ft.TextOverflow.ELLIPSIS), meta],
@@ -174,11 +177,13 @@ class ActivityPanel:
               if job.active else []),
         ], vertical_alignment=ft.CrossAxisAlignment.START, spacing=T.S3)
         parts: list[ft.Control] = [head]
-        if running:
-            bar = C.progress_bar(job.fraction)
-            msg = C.meta(_progress_text(job), max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
-            parts += [bar, msg]
-            self._live[job.id] = (bar, msg, meta, None)
+        if running:  # the game on its way through the portal, with the six steps
+            transit = self._transits.get(job.id)
+            if transit is None:
+                transit = self._transits[job.id] = C.Transit(heading=False)
+            transit.set(job, **self.app.transit_info(job))
+            parts.append(transit.control)
+            self._live[job.id] = (transit, None)
         if expanded:
             if job.stages:
                 parts.append(ft.Column([
@@ -202,21 +207,22 @@ class ActivityPanel:
                 C.ghost(tr("Hide log") if show_log else tr("Show log"), ft.Icons.TERMINAL_ROUNDED,
                         lambda e: self._toggle(self.logs, job.id)),
                 C.ghost(tr("Copy log"), ft.Icons.CONTENT_COPY_ROUNDED, lambda e: self.app.copy(self.job_text(job))),
-                *([C.ghost(tr("Full launch log"), ft.Icons.DESCRIPTION_ROUNDED,
+                *([C.ghost(tr("Full launch log"), ft.Icons.DESCRIPTION_OUTLINED,
                            lambda e: self.app.show_log_file(job.log_path, job.title))] if job.log_path else []),
             ], spacing=0, wrap=True))
             if show_log:
                 log, col = self._log_view(job)
                 log.value = "\n".join(job.log[-400:])
                 if running:
-                    self._live[job.id] = (*self._live[job.id][:3], log)
+                    self._live[job.id] = (self._live[job.id][0], log)
                 else:
                     col.auto_scroll = False
                 parts.append(ft.Container(col, bgcolor=T.BG, border_radius=T.RADIUS_SM, padding=T.S2,
                                           height=T.px(240)))
         return ft.Container(ft.Column(parts, spacing=T.S2), bgcolor=T.SURFACE, border_radius=T.RADIUS,
                             border=ft.Border.all(1, T.ACCENT if running else T.BORDER), padding=T.S3,
-                            on_click=None if running else lambda e: self._toggle(self.expanded, job.id))
+                            on_click=None if running else lambda e: self._toggle(self.expanded, job.id),
+                            ink=not running)
 
     def _log_view(self, job: Job) -> tuple[ft.Text, ft.Column]:
         """The job's log view, the same one for the job's whole life: rebuilding it on every new stage or check reset

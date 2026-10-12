@@ -44,7 +44,7 @@ try:
 except ImportError:  # Windows: pc_revive loads this file for its VDF code only (GitHub #131)
     fcntl = None
 
-AGENT_VERSION = 71
+AGENT_VERSION = 80
 HOME = os.path.expanduser("~")
 STEAM = os.path.join(HOME, ".local/share/Steam")
 ANCHORS = os.path.join(HOME, "Applications/quest-frame")
@@ -65,6 +65,19 @@ OLD_CODEC_LINES = ('[[ ! -x "$app_dir/frameport-codec/bin/podman" ]] || '
                    'export PATH="$app_dir/frameport-codec/bin:$PATH"',
                    'codec_bin="$HOME/.local/share/frameport/video-codec/current/bin"\n'
                    '[[ ! -x "$codec_bin/podman" ]] || export PATH="$codec_bin:$PATH"')
+# Steam Input's virtual gamepad for 2D Android apps (patch device.steam_gamepad, per game, GitHub #162): Lepton's
+# Android only gets keyboard/pointer/touch from the Wayland seat, so a game never sees a controller. The launcher of a
+# game that has it puts FramePort's own Podman wrapper (PODMAN_WRAPPER, written next to the agent, independent of the
+# video codec) first on Lepton's PATH; for that game's `podman run` it bind-mounts Steam's virtual pads
+# (/dev/input/eventN) and a key layout, then hands on to the next Podman on PATH (the codec wrapper, if that game has
+# it, else Podman itself). LEPTON_ENV_SDL_... = SDL's hint that stops it ignoring Steam's virtual pad (Lepton passes
+# LEPTON_ENV_<NAME> to the app as <NAME>). Off for one game: FRAMEPORT_NO_GAMEPAD=1 in its launch options.
+GAMEPAD_PATCH = "device.steam_gamepad"
+PODMAN_BIN = os.path.join(HOME, ".local/share/frameport/agent/bin")
+GAMEPAD_LINE = ('[[ "${FRAMEPORT_NO_GAMEPAD:-0}" != 0 ]] || { export FRAMEPORT_GAMEPAD=1 '
+                'LEPTON_ENV_SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD=1; '
+                '[[ ! -x "$HOME/.local/share/frameport/agent/bin/podman" ]] || '
+                'export PATH="$HOME/.local/share/frameport/agent/bin:$PATH"; }')
 
 
 class AgentError(Exception):
@@ -697,6 +710,10 @@ def ensure_host_fixes():
             f.write(text)
         changed.append("podman keyring=false")
     try:
+        ensure_podman_wrapper()  # used only by launchers with the gamepad line (device.steam_gamepad)
+    except OSError:
+        pass
+    try:
         upgraded = upgrade_launchers()
     except Exception:  # noqa: BLE001
         upgraded = []
@@ -714,6 +731,18 @@ def ensure_host_fixes():
         entries = []
     if entries:
         changed.append(f"Desktop Mode entries ({len(entries)})")
+    try:
+        overlays = overlay_registrations()
+    except Exception:  # noqa: BLE001
+        overlays = []
+    if overlays:
+        changed.append(f"SteamVR overlay apps registered ({len(overlays)})")
+    try:
+        service = ensure_overlay_service()
+    except Exception:  # noqa: BLE001
+        service = None
+    if service:
+        changed.append(f"overlay autostart service {service}")
     return changed
 
 
@@ -921,7 +950,15 @@ def upsert_shortcut(vdf_path, exe, title, start_dir, icon="", tag="Quest on Fram
     data = open(vdf_path, "rb").read() if os.path.exists(vdf_path) else b""
     root = vdf_decode(data) if data else {"shortcuts": {}}
     shortcuts = root.setdefault("shortcuts", {})
-    entry = next((v for v in shortcuts.values() if isinstance(v, dict) and v.get("Exe") == exe), None)
+    # matched by Exe; a launcher many games share (Revive's injector on a PC) also by the game in its launch options,
+    # or two Revive games overwrote each other's shortcut
+    shared = "reviveinjector" in exe.lower()
+
+    def game_of(options):  # the game's program in the injector's arguments (its flags may change)
+        found = re.findall(r'"([^"]+\.exe)"|(\S+\.exe)', options or "", re.IGNORECASE)
+        return (found[-1][0] or found[-1][1]).lower() if found else (options or "")
+    entry = next((v for v in shortcuts.values() if isinstance(v, dict) and v.get("Exe") == exe
+                  and (not shared or game_of(v.get("LaunchOptions", "")) == game_of(launch_options))), None)
     ident = entry["appid"] if entry else shortcut_appid(exe, title)
     if entry is None:
         entry = {"appid": ident, "LastPlayTime": 0, "tags": {"0": tag}}
@@ -1117,7 +1154,9 @@ def game_running():
     names = run(["podman", "ps", "--format", "{{.Names}}"]).stdout.split()
     if any(n.startswith("lepton-steamlaunch-") for n in names):
         return True
-    return any(pcvr_pids(d["base"]) for d in cmd_list_installed({})["games"] if d.get("kind") in ("pcvr", "linux"))
+    # overlay apps (fpsVR & co.) run next to games, often all the time: they don't hold up installs
+    return any(pcvr_pids(d["base"]) for d in cmd_list_installed({})["games"]
+               if d.get("kind") in ("pcvr", "linux") and not is_overlay(d))
 
 
 def shortcuts_worker(payload):
@@ -1436,6 +1475,18 @@ def deployment(pkg):
     dep.setdefault("base", os.path.dirname(path))
     dep.setdefault("title", pkg)
     return dep
+
+
+def write_deployment(pkg, dep):
+    path = os.path.join(ANCHORS, pkg, "deployment.json")
+    with open(path + ".tmp", "w") as f:
+        json.dump(dep, f, indent=2)
+    os.replace(path + ".tmp", path)
+
+
+def is_overlay(dep):
+    """An installed SteamVR overlay app (runs next to games: no launch test, not a "running game")."""
+    return bool(isinstance(dep, dict) and dep.get("overlay"))
 
 
 def cmd_list_installed(args):
@@ -2146,6 +2197,11 @@ def cmd_delete_screenshots(args):
     for p in paths:
         os.unlink(p)
         deleted.append(p)
+        stem, ext = os.path.splitext(p)
+        try:  # a VR screenshot's stereo copy (<name>_vr.jpg) next to it goes too
+            os.unlink(stem + "_vr" + ext)
+        except FileNotFoundError:
+            pass
         thumbs = os.path.join(os.path.dirname(p), "thumbnails")
         if inside_userdata(thumbs):
             try:
@@ -2153,6 +2209,654 @@ def cmd_delete_screenshots(args):
             except FileNotFoundError:
                 pass
     return {"deleted": deleted}
+
+
+# Headset screenshots through OpenVR's IVRScreenshots (SteamVR's own libopenvr_api.so via ctypes, no build step):
+# connect as a background app (never starts SteamVR), RequestScreenshot(stereo) = SteamVR captures what the wearer
+# sees into two files (a flat preview + the stereo image), SubmitScreenshot = the Steam client adds them to its
+# library like a shot taken in the headset (under SteamVR, 250820). Verified on the device 2026-10-08. (SteamVR's
+# dashboard debug command `screenshot_request` over its web mailbox did nothing here.) While the headset sleeps the
+# compositor captures nothing.
+OPENVR_LIBS = ("/opt/steamvr/bin/linuxarm64/libopenvr_api.so", "/opt/steamvr/bin/linux64/libopenvr_api.so")
+VR_APP_BACKGROUND = 3
+VR_SHOT_STEREO = 2
+HMD_STATE = re.compile(r"\[CCVTrackedHmdDriver\] in State(\w+)")
+
+
+def hmd_state():
+    """The headset's state from SteamVR's driver log ("Normal", "Standby", ... ; None = unknown)."""
+    try:
+        with open(os.path.join(STEAM, "logs", "vrserver.txt"), "rb") as f:
+            f.seek(max(0, os.path.getsize(f.name) - 400_000))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return None
+    found = HMD_STATE.findall(text)
+    return found[-1] if found else None
+
+
+def steamvr_shot_files():
+    return set(glob.glob(os.path.join(STEAM, "userdata", "*", "760", "remote", STEAMVR_APPID, "screenshots", "*")))
+
+
+def vr_screenshot(capture_wait=6.0):
+    """Ask SteamVR for a stereo screenshot and hand it to Steam. Returns None when submitted, else why not:
+    "steamvr" (not running / no OpenVR), "capture" (nothing captured: the headset sleeps), or an error text."""
+    import ctypes
+    import tempfile
+
+    lib = next((p for p in OPENVR_LIBS if os.path.isfile(p)), None)
+    if lib is None:
+        return "steamvr"
+    vr = ctypes.CDLL(lib)
+    vr.VR_InitInternal2.restype = ctypes.c_uint32
+    vr.VR_InitInternal2.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_char_p]
+    vr.VR_GetGenericInterface.restype = ctypes.c_void_p
+    vr.VR_GetGenericInterface.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]
+    vr.VR_ShutdownInternal.restype = None
+    err = ctypes.c_int(0)
+    vr.VR_InitInternal2(ctypes.byref(err), VR_APP_BACKGROUND, None)
+    if err.value:
+        return "steamvr"
+    tmp = tempfile.mkdtemp(prefix="frameport-shot-")
+    try:
+        request = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int, ctypes.c_char_p,
+                                   ctypes.c_char_p)
+        submit = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_uint32, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p)
+
+        class Table(ctypes.Structure):  # openvr_capi.h VR_IVRScreenshots_FnTable (IVRScreenshots_001)
+            _fields_ = [("RequestScreenshot", request), ("HookScreenshot", ctypes.c_void_p),
+                        ("GetScreenshotPropertyType", ctypes.c_void_p),
+                        ("GetScreenshotPropertyFilename", ctypes.c_void_p),
+                        ("UpdateScreenshotProgress", ctypes.c_void_p), ("TakeStereoScreenshot", ctypes.c_void_p),
+                        ("SubmitScreenshot", submit)]
+
+        ierr = ctypes.c_int(0)
+        ptr = vr.VR_GetGenericInterface(b"FnTable:IVRScreenshots_001", ctypes.byref(ierr))
+        if not ptr:
+            return f"no screenshot interface ({ierr.value})"
+        table = Table.from_address(ptr)
+        base = os.path.join(tmp, "shot")
+        handle = ctypes.c_uint32(0)
+        r = table.RequestScreenshot(ctypes.byref(handle), VR_SHOT_STEREO, (base + "_preview").encode(),
+                                    (base + "_vr").encode())
+        if r:
+            return f"SteamVR refused the screenshot ({r})"
+        preview, full = base + "_preview.png", base + "_vr.png"
+        deadline = time.time() + capture_wait
+        while time.time() < deadline and not (os.path.isfile(preview) and os.path.isfile(full)):
+            time.sleep(0.2)
+        if not (os.path.isfile(preview) and os.path.isfile(full)):
+            return "capture"
+        time.sleep(0.4)  # the second file can still be being written
+        r = table.SubmitScreenshot(handle.value, VR_SHOT_STEREO, preview.encode(), full.encode())
+        if r:
+            return f"Steam didn't take the screenshot ({r})"
+        time.sleep(1.5)  # Steam copies the files: keep them until it has
+        return None
+    finally:
+        vr.VR_ShutdownInternal()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cmd_take_screenshot(args):
+    """A headset screenshot now (vr_screenshot), saved by Steam under SteamVR; waits up to `wait` s for its file:
+    {taken, path, reason, hmd}. reason: "steamvr" (SteamVR not running), "capture" (the headset sleeps), other text =
+    an error."""
+    wait = float(args.get("wait") or 8)
+    before = steamvr_shot_files()
+    reason = vr_screenshot()
+    if reason is None:
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            new = [p for p in steamvr_shot_files() - before if SHOT_NAME.match(os.path.basename(p))]
+            if new:
+                return {"taken": True, "path": max(new, key=os.path.getmtime), "reason": None, "hmd": hmd_state()}
+            time.sleep(0.4)
+        reason = "not saved"
+    return {"taken": False, "path": None, "reason": reason, "hmd": hmd_state()}
+
+
+# ------------------------------------------------------------------------------------------ SteamVR overlay apps (v75)
+# OpenVR overlay applications (VRApplication_Overlay: fpsVR, wrist watches, ...) draw no scene; SteamVR's compositor
+# draws their overlays over whatever runs, Lepton (Quest) games and Proton (PC VR) games included (verified on the
+# device 2026-10-10, docs/FRAME_RUNTIME.md "Overlay apps"). FramePort installs one like a PC VR game (Proton) or a
+# Linux app and registers an application manifest with SteamVR (IVRApplications, live: SteamVR keeps the path in its
+# appconfig.json) whose binary is the app's launch.sh, so SteamVR can start it, also at every SteamVR start
+# ("autostart" = SteamVR's own auto-launch flag). The app's Steam shortcut still starts it from the library.
+OVERLAY_MANIFEST = "frameport-overlay.vrmanifest"
+VR_APP_UTILITY = 4
+# openvr_capi.h VR_IVRApplications_FnTable (IVRApplications_007) slots used here
+VR_APPS = {"AddApplicationManifest": 0, "RemoveApplicationManifest": 1, "IsApplicationInstalled": 2,
+           "LaunchApplication": 6, "GetApplicationProcessId": 12, "GetApplicationsErrorNameFromEnum": 13,
+           "SetApplicationAutoLaunch": 17, "GetApplicationAutoLaunch": 18}
+
+
+def overlay_key(pkg, app=None):
+    """The overlay's SteamVR application key: the app's own (from its bundled manifest, so registering it by hand
+    too can't make a second entry), else "frameport.<package>"."""
+    key = (app or {}).get("app_key")
+    if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.-]{3,100}", key):
+        return key
+    return "frameport." + re.sub(r"[^a-z0-9_.-]", "_", pkg.lower())
+
+
+def overlay_app_dir(dep):
+    """Where the app's files are on the Frame (its bundled manifest's paths are relative to manifest_dir there)."""
+    tree = "app" if dep.get("kind") == "linux" else "game"
+    rel = os.path.normpath((dep.get("overlay") or {}).get("manifest_dir") or ".")
+    if rel.startswith("..") or os.path.isabs(rel):
+        rel = "."
+    return os.path.normpath(os.path.join(dep["base"], tree, rel))
+
+
+def overlay_manifest(anchor, pkg, dep):
+    """SteamVR application manifest for an installed overlay app: the app's own bundled manifest entry (key, name,
+    image) when it has one, with its binary replaced by FramePort's launch.sh (Proton or the Linux launcher, which
+    set up the environment) and every path absolute."""
+    title = dep.get("title") or pkg
+    app = dict((dep.get("overlay") or {}).get("app") or {})
+    src = overlay_app_dir(dep)
+    image = app.get("image_path")
+    image = os.path.join(src, image) if isinstance(image, str) and image else ""
+    if not (image and os.path.isfile(image)):
+        image = os.path.join(anchor, "artwork", "icon.png")
+    strings = app.get("strings") if isinstance(app.get("strings"), dict) else \
+        {"en_us": {"name": title, "description": f"{title} (installed by FramePort)"}}
+    # SteamVR on the Frame (linuxarm64) only reads binary_path_linux_arm ("must specify binary_path for launch_type
+    # binary. Skipping" for a manifest with binary_path_linux alone); both for SteamVR builds that read the other
+    launcher = os.path.join(anchor, "launch.sh")
+    entry = {"app_key": overlay_key(pkg, app), "launch_type": "binary",
+             "binary_path_linux_arm": launcher, "binary_path_linux": launcher, "working_directory": anchor,
+             "is_dashboard_overlay": True, "image_path": image, "strings": strings}
+    if dep.get("kind") == "linux" and app.get("arguments"):  # the Linux launcher passes them on ("$@")
+        entry["arguments"] = app["arguments"]
+    return {"source": "builtin", "applications": [entry]}
+
+
+class SteamVRApps:
+    """IVRApplications of the running SteamVR, through its libopenvr_api.so (ctypes) as a utility app (never starts
+    SteamVR). `None` from open() = SteamVR isn't running."""
+
+    @classmethod
+    def open(cls):
+        import ctypes
+
+        lib = next((p for p in OPENVR_LIBS if os.path.isfile(p)), None)
+        if lib is None:
+            return None
+        vr = ctypes.CDLL(lib)
+        vr.VR_InitInternal2.restype = ctypes.c_uint32
+        vr.VR_InitInternal2.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_char_p]
+        vr.VR_GetGenericInterface.restype = ctypes.c_void_p
+        vr.VR_GetGenericInterface.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_int)]
+        vr.VR_IsRuntimeInstalled.restype = ctypes.c_bool
+        vr.VR_ShutdownInternal.restype = None
+        err = ctypes.c_int(0)
+        vr.VR_InitInternal2(ctypes.byref(err), VR_APP_UTILITY, None)
+        if err.value:
+            return None
+        ptr = vr.VR_GetGenericInterface(b"FnTable:IVRApplications_007", ctypes.byref(err))
+        if not ptr:
+            vr.VR_ShutdownInternal()
+            return None
+        self = cls()
+        self.vr, self.ct = vr, ctypes
+        self.table = (ctypes.c_void_p * 31).from_address(ptr)
+        return self
+
+    def fn(self, name, restype, *argtypes):
+        return self.ct.CFUNCTYPE(restype, *argtypes)(self.table[VR_APPS[name]])
+
+    def error(self, code):
+        if not code:
+            return None
+        name = self.fn("GetApplicationsErrorNameFromEnum", self.ct.c_char_p, self.ct.c_int)(code)
+        return (name or b"").decode() or str(code)
+
+    def add(self, path):
+        return self.error(self.fn("AddApplicationManifest", self.ct.c_int, self.ct.c_char_p, self.ct.c_bool)(
+            path.encode(), False))
+
+    def remove(self, path):
+        return self.error(self.fn("RemoveApplicationManifest", self.ct.c_int, self.ct.c_char_p)(path.encode()))
+
+    def installed(self, key):
+        return bool(self.fn("IsApplicationInstalled", self.ct.c_bool, self.ct.c_char_p)(key.encode()))
+
+    def set_autolaunch(self, key, on):
+        return self.error(self.fn("SetApplicationAutoLaunch", self.ct.c_int, self.ct.c_char_p, self.ct.c_bool)(
+            key.encode(), bool(on)))
+
+    def autolaunch(self, key):
+        return bool(self.fn("GetApplicationAutoLaunch", self.ct.c_bool, self.ct.c_char_p)(key.encode()))
+
+    def launch(self, key):
+        return self.error(self.fn("LaunchApplication", self.ct.c_int, self.ct.c_char_p)(key.encode()))
+
+    def pid(self, key):
+        return int(self.fn("GetApplicationProcessId", self.ct.c_uint32, self.ct.c_char_p)(key.encode()))
+
+    def close(self):
+        self.vr.VR_ShutdownInternal()
+
+
+def register_overlay(pkg, autostart=False):
+    """Write the overlay app's manifest next to its launcher and register it with SteamVR (live). Returns
+    {key, manifest, registered, autostart, error}; registered False + error "steamvr" = SteamVR isn't running (the
+    deployment keeps "overlay" and ensure_host_fixes registers it at the next connection)."""
+    dep = deployment(pkg)
+    if not dep:
+        raise AgentError(f"{pkg} is not installed")
+    anchor = os.path.join(ANCHORS, pkg)
+    path = os.path.join(anchor, OVERLAY_MANIFEST)
+    manifest = overlay_manifest(anchor, pkg, dep)
+    with open(path + ".tmp", "w") as f:
+        json.dump(manifest, f, indent=2)
+    os.replace(path + ".tmp", path)
+    key = manifest["applications"][0]["app_key"]
+    out = {"key": key, "manifest": path, "registered": False, "autostart": False, "error": None}
+    apps = SteamVRApps.open()
+    if apps is None:
+        out["error"] = "steamvr"
+        return out
+    try:
+        out["error"] = apps.add(path)
+        out["registered"] = apps.installed(key)
+        if out["registered"]:
+            out["error"] = apps.set_autolaunch(key, autostart) or out["error"]
+            out["autostart"] = apps.autolaunch(key)
+    finally:
+        apps.close()
+    return out
+
+
+def dep_overlay_key(pkg, dep=None):
+    dep = dep if dep is not None else deployment(pkg)
+    return overlay_key(pkg, ((dep or {}).get("overlay") or {}).get("app"))
+
+
+def unregister_overlay(pkg):
+    """Remove the overlay app's manifest from SteamVR (and the file). True when SteamVR was reached."""
+    anchor = os.path.join(ANCHORS, pkg)
+    path = os.path.join(anchor, OVERLAY_MANIFEST)
+    key = None
+    try:
+        key = json.load(open(path))["applications"][0]["app_key"]
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        key = dep_overlay_key(pkg)
+    apps = SteamVRApps.open()
+    reached = apps is not None
+    if apps is not None:
+        try:
+            apps.set_autolaunch(key, False)
+            apps.remove(path)
+        finally:
+            apps.close()
+    if os.path.exists(path):
+        os.remove(path)
+    return reached
+
+
+def overlay_entry(app):
+    """The overlay application entry of an app's bundled .vrmanifest (validated; None if there is none)."""
+    if not isinstance(app, dict):
+        return None
+    keep = {k: app[k] for k in ("app_key", "image_path", "strings", "arguments") if k in app}
+    if not isinstance(keep.get("image_path", ""), str) or not isinstance(keep.get("arguments", ""), str):
+        return None
+    return keep
+
+
+def cmd_register_vr_overlay(args):
+    """Register an installed app as a SteamVR overlay app: {package, autostart, app (its bundled manifest's overlay
+    entry, optional), manifest_dir (that manifest's folder in the app's files)} → register_overlay()'s result. The
+    deployment records it (overlay apps skip launch tests and don't count as a running game)."""
+    pkg = check_pkg(args["package"])
+    dep = deployment(pkg)
+    if not dep:
+        raise AgentError(f"{pkg} is not installed")
+    old = dep.get("overlay") or {}
+    app = overlay_entry(args["app"]) if "app" in args else old.get("app")
+    dep["overlay"] = {"autostart": bool(args.get("autostart")), "app": app,
+                      "manifest_dir": args.get("manifest_dir", old.get("manifest_dir")) or ".", "registered": False}
+    dep["overlay"]["key"] = overlay_key(pkg, app)
+    if old.get("key") and old["key"] != dep["overlay"]["key"]:
+        unregister_overlay(pkg)
+    write_deployment(pkg, dep)
+    out = register_overlay(pkg, bool(args.get("autostart")))
+    dep["overlay"]["registered"] = out["registered"]
+    write_deployment(pkg, dep)
+    out["service"] = overlay_service_quiet()
+    return out
+
+
+def cmd_unregister_vr_overlay(args):
+    pkg = check_pkg(args["package"])
+    reached = unregister_overlay(pkg)
+    dep = deployment(pkg)
+    if dep and "overlay" in dep:
+        dep.pop("overlay")
+        write_deployment(pkg, dep)
+    overlay_service_quiet()
+    return {"unregistered": True, "steamvr": reached}
+
+
+def cmd_launch_vr_overlay(args):
+    """Start an installed overlay app through SteamVR (LaunchApplication of its manifest), not as a Steam game, so a
+    game can be played next to it. {started, pid, error}."""
+    pkg = check_pkg(args["package"])
+    dep = deployment(pkg)
+    if not dep or not dep.get("overlay"):
+        raise AgentError(f"{pkg} is not installed as an overlay app")
+    if not dep["overlay"].get("registered"):
+        register_overlay(pkg, dep["overlay"].get("autostart"))
+    apps = SteamVRApps.open()
+    if apps is None:
+        raise AgentError("SteamVR isn't running on the Frame")
+    try:
+        key = dep_overlay_key(pkg, dep)
+        if not apps.installed(key):
+            apps.add(os.path.join(ANCHORS, pkg, OVERLAY_MANIFEST))
+        err = apps.launch(key)
+        pid = 0
+        for _ in range(20):
+            pid = apps.pid(key)
+            if pid or err:
+                break
+            time.sleep(0.5)
+    finally:
+        apps.close()
+    return {"started": not err, "pid": pid or None, "error": err}
+
+
+def overlay_service_quiet():
+    """ensure_overlay_service() after an overlay app's autostart flag changed; a systemd problem never fails the
+    command (ensure_host_fixes tries again at the next connection)."""
+    try:
+        return ensure_overlay_service()
+    except Exception as exc:  # noqa: BLE001
+        return f"error: {exc}"
+
+
+def overlay_registrations():
+    """Register overlay apps whose registration is missing (SteamVR wasn't running at install, or forgot it)."""
+    done = []
+    for dep_path in glob.glob(os.path.join(ANCHORS, "*/deployment.json")):
+        try:
+            dep = json.load(open(dep_path))
+        except (OSError, ValueError):
+            continue
+        ov = dep.get("overlay") if isinstance(dep, dict) else None
+        if not ov or not dep.get("package"):
+            continue
+        apps = SteamVRApps.open()
+        if apps is None:
+            return done
+        try:
+            ok = apps.installed(dep_overlay_key(dep["package"], dep))
+        finally:
+            apps.close()
+        if not ok:
+            r = register_overlay(dep["package"], ov.get("autostart"))
+            if r["registered"]:
+                ov["registered"] = True
+                write_deployment(dep["package"], dep)
+                done.append(dep["package"])
+    return done
+
+
+# ------------------------------------------------------------------------------------------ overlay autostart (v76)
+# SteamVR's own auto-launch flag (SetApplicationAutoLaunch) was accepted on the dev Frame but never written to
+# steamvr.vrsettings, and a registered watch didn't start by itself (2026-10-10). FramePort's deployment flag
+# (overlay.autostart) is the source of truth: a small user service (only while at least one installed overlay app has
+# autostart on) notices every new vrserver process (SteamVR start or restart, boot), waits until SteamVR answers,
+# gives SteamVR's own auto-launch a moment, then starts each autostart overlay app that isn't running yet, the same
+# way launch_vr_overlay does (LaunchApplication: SteamVR spawns it, in its own environment). Off for every app: the
+# flag file VR_OVERLAY_DISABLED or FRAMEPORT_NO_OVERLAY_AUTOSTART=1 (the service is then removed).
+VR_OVERLAY_UNIT = "frameport-vr-overlays"
+SYSTEMD_USER_DIR = os.path.join(HOME, ".config/systemd/user")
+VR_OVERLAY_UNIT_PATH = os.path.join(SYSTEMD_USER_DIR, VR_OVERLAY_UNIT + ".service")
+VR_OVERLAY_DISABLED = os.path.join(HOME, ".local/share/frameport/vr-overlays.disabled")
+VR_OVERLAY_LOG = os.path.join(HOME, ".local/share/frameport/vr-overlays.log")
+VR_OVERLAY_STATE = os.path.join(HOME, ".cache/frameport-vr-overlays.json")
+VR_OVERLAY_LOG_MAX = 128 * 1024
+VR_OVERLAY_POLL = 5  # s between /proc scans (nothing else happens while SteamVR keeps running)
+VR_OVERLAY_READY_WAIT = 180  # s for a new SteamVR to answer IVRApplications
+VR_OVERLAY_GRACE = 15  # s after SteamVR answers: its own auto-launch may start the app first
+
+
+def overlay_autostart_disabled():
+    return os.environ.get("FRAMEPORT_NO_OVERLAY_AUTOSTART", "0") not in ("", "0") or \
+        os.path.exists(VR_OVERLAY_DISABLED)
+
+
+def autostart_overlays():
+    """Installed overlay apps whose deployment has autostart on: [(package, deployment)]."""
+    found = []
+    for dep_path in sorted(glob.glob(os.path.join(ANCHORS, "*/deployment.json"))):
+        try:
+            dep = json.load(open(dep_path))
+        except (OSError, ValueError):
+            continue
+        if isinstance(dep, dict) and dep.get("package") and (dep.get("overlay") or {}).get("autostart"):
+            dep.setdefault("base", os.path.dirname(dep_path))
+            found.append((dep["package"], dep))
+    return found
+
+
+def systemd_quote(arg):
+    """One ExecStart= word (systemd's own quoting: double quotes, % and $ doubled)."""
+    arg = arg.replace("%", "%%").replace("$", "$$")
+    if re.fullmatch(r"[A-Za-z0-9_./+:=@-]+", arg):
+        return arg
+    return '"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def vr_overlay_unit():
+    """The user service's unit text (the agent's path and Python are written in: the agent lives in AGENT_HOME)."""
+    agent = os.path.abspath(__file__)
+    return ("[Unit]\n"
+            "Description=FramePort: start SteamVR overlay apps with SteamVR\n"
+            "\n[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={systemd_quote(sys.executable or '/usr/bin/python3')} {systemd_quote(agent)} "
+            "_vr_overlay_watch\n"
+            "Restart=always\n"
+            "RestartSec=10\n"
+            "Nice=10\n"
+            "\n[Install]\n"
+            "WantedBy=default.target\n")
+
+
+def user_systemctl(*args):
+    return run(["systemctl", "--user", *args])
+
+
+def ensure_overlay_service():
+    """Install (or update) the overlay autostart service when an installed overlay app has autostart on, remove it
+    when none has (or the kill switch is set). Returns "installed", "updated", "removed" or None (no change)."""
+    want = bool(autostart_overlays()) and not overlay_autostart_disabled()
+    text = vr_overlay_unit()
+    try:
+        current = open(VR_OVERLAY_UNIT_PATH).read()
+    except OSError:
+        current = None
+    if not want:
+        if current is None:
+            return None
+        user_systemctl("disable", "--now", VR_OVERLAY_UNIT + ".service")
+        try:
+            os.remove(VR_OVERLAY_UNIT_PATH)
+        except OSError:
+            pass
+        user_systemctl("daemon-reload")
+        user_systemctl("reset-failed", VR_OVERLAY_UNIT + ".service")
+        return "removed"
+    if current == text:
+        if user_systemctl("is-active", "--quiet", VR_OVERLAY_UNIT + ".service").returncode == 0:
+            return None
+        user_systemctl("enable", "--now", VR_OVERLAY_UNIT + ".service")
+        return "started"
+    os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
+    tmp = VR_OVERLAY_UNIT_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, VR_OVERLAY_UNIT_PATH)
+    user_systemctl("daemon-reload")
+    user_systemctl("enable", VR_OVERLAY_UNIT + ".service")
+    user_systemctl("restart", VR_OVERLAY_UNIT + ".service")
+    return "installed" if current is None else "updated"
+
+
+def overlay_log(msg):
+    try:
+        os.makedirs(os.path.dirname(VR_OVERLAY_LOG), exist_ok=True)
+        if os.path.exists(VR_OVERLAY_LOG) and os.path.getsize(VR_OVERLAY_LOG) > VR_OVERLAY_LOG_MAX:
+            os.replace(VR_OVERLAY_LOG, VR_OVERLAY_LOG + ".1")
+        with open(VR_OVERLAY_LOG, "a") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass
+
+
+def vrserver_ident(pid):
+    """"<pid>:<start ticks>" when process `pid` is a vrserver (the start time tells a reused pid apart), else None."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+    except OSError:
+        return None
+    if stat[stat.find("(") + 1:stat.rfind(")")] != "vrserver":
+        return None
+    return f"{pid}:{stat[stat.rfind(')') + 2:].split()[19]}"
+
+
+def vrserver_process(known=None):
+    """The running vrserver's vrserver_ident, None if none. `known` (the last one seen) is checked first: while
+    SteamVR keeps running a poll reads one file instead of scanning /proc."""
+    if known and vrserver_ident(known.split(":")[0]) == known:
+        return known
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            found = vrserver_ident(d)
+            if found:
+                return found
+    return None
+
+
+def overlay_running(pkg, dep, apps=None):
+    """The overlay app runs already: a process of its install folder or launcher (also when Steam or SteamVR started
+    it), or SteamVR knows its process (GetApplicationProcessId)."""
+    if pcvr_pids(dep.get("base") or os.path.join(ANCHORS, pkg)) or pcvr_pids(os.path.join(ANCHORS, pkg)):
+        return True
+    if apps is not None:
+        try:
+            return bool(apps.pid(dep_overlay_key(pkg, dep)))
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
+def overlay_autostart_round():
+    """One new SteamVR: wait until it answers, give its own auto-launch a moment, then start each autostart overlay
+    app that isn't running. Returns {package: "started" | "running" | error text}; {} without SteamVR."""
+    deadline = time.time() + VR_OVERLAY_READY_WAIT
+    apps = SteamVRApps.open()
+    while apps is None and time.time() < deadline:
+        time.sleep(3)
+        apps = SteamVRApps.open()
+    if apps is None:
+        overlay_log("SteamVR didn't answer: nothing started")
+        return {}
+    try:
+        time.sleep(VR_OVERLAY_GRACE)
+        todo = [(pkg, dep) for pkg, dep in autostart_overlays() if not overlay_running(pkg, dep, apps)]
+        result = {pkg: "running" for pkg, _ in autostart_overlays() if pkg not in dict(todo)}
+    finally:
+        apps.close()
+    for pkg, _ in todo:
+        try:
+            r = cmd_launch_vr_overlay({"package": pkg})
+            result[pkg] = "started" if r.get("started") else (r.get("error") or "not started")
+        except Exception as exc:  # noqa: BLE001
+            result[pkg] = str(exc) or type(exc).__name__
+    return result
+
+
+def overlay_watch_tick(state):
+    """One poll of the watcher: a vrserver not handled before (state["vrserver"]) gets one autostart round. Returns
+    the round's result, or None when there was nothing to do."""
+    if overlay_autostart_disabled():
+        return None
+    proc = vrserver_process(state.get("vrserver"))
+    if not proc or proc == state.get("vrserver"):
+        return None
+    state["vrserver"] = proc
+    overlay_save_state(state)  # a restarted watcher (agent update) doesn't start apps the user closed again
+    if not autostart_overlays():
+        return None
+    overlay_log(f"new SteamVR (vrserver {proc.split(':')[0]})")
+    result = run_overlay_round()
+    for pkg, what in result.items():
+        overlay_log(f"{pkg}: {what}" if what in ("started", "running") else f"{pkg}: couldn't start it: {what}")
+    state["last"] = {"time": time.time(), "result": result}
+    overlay_save_state(state)
+    return result
+
+
+def run_overlay_round():
+    """overlay_autostart_round() in a child process (_vr_overlay_round): OpenVR is loaded only there, and a SteamVR
+    that never answers can't hang the watcher (timeout)."""
+    try:
+        p = subprocess.run([sys.executable, os.path.abspath(__file__), "_vr_overlay_round"], capture_output=True,
+                           text=True, errors="replace", timeout=VR_OVERLAY_READY_WAIT + VR_OVERLAY_GRACE + 120)
+    except subprocess.TimeoutExpired:
+        return {"*": "timed out"}
+    try:
+        out = json.loads(p.stdout.strip().splitlines()[-1])
+        return out if isinstance(out, dict) else {}
+    except (ValueError, IndexError):
+        return {"*": (p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1]}
+
+
+def overlay_save_state(state):
+    try:
+        os.makedirs(os.path.dirname(VR_OVERLAY_STATE), exist_ok=True)
+        with open(VR_OVERLAY_STATE + ".tmp", "w") as f:
+            json.dump(state, f)
+        os.replace(VR_OVERLAY_STATE + ".tmp", VR_OVERLAY_STATE)
+    except OSError:
+        pass
+
+
+def vr_overlay_watch():
+    """The service's loop (_vr_overlay_watch): a /proc scan every VR_OVERLAY_POLL s. Exits when its own file changes
+    (an agent update: systemd starts the new one)."""
+    me = os.path.abspath(__file__)
+    try:
+        mine = os.path.getmtime(me)
+    except OSError:
+        mine = None
+    try:
+        state = json.load(open(VR_OVERLAY_STATE))
+        state = state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        state = {}
+    overlay_log(f"watching (agent v{AGENT_VERSION}, overlay apps with autostart: "
+                f"{', '.join(p for p, _ in autostart_overlays()) or 'none'})")
+    while True:
+        try:
+            if os.path.getmtime(me) != mine:
+                overlay_log("agent updated: restarting")
+                return
+        except OSError:
+            return
+        try:
+            overlay_watch_tick(state)
+        except Exception as exc:  # noqa: BLE001 (keep watching)
+            overlay_log(f"error: {exc}")
+        time.sleep(VR_OVERLAY_POLL)
 
 
 def cmd_prepare(args):
@@ -2297,6 +3001,9 @@ def upgrade_launchers():
         # launchers are never touched). Running launchers keep reading their old file.
         if "export LEPTON_ENV_FRAMEBRIDGE_CONFIG=" in new:
             new = set_codec_line(new, wants_hw_video(os.path.dirname(path)))
+            new = set_gamepad_line(new, wants_gamepad(os.path.dirname(path)))
+            new = set_config_sync_line(new, os.path.basename(os.path.dirname(path)),
+                                       wants_config_sync(os.path.dirname(path)))
         if "a Linux app. Generated by FramePort" in new and "FRAMEPORT_DESKTOP" not in new:
             new = upgrade_linux_launcher(new)
         if OLD_WATCHDOG in new and "parent=$PPID" not in new:
@@ -2377,6 +3084,227 @@ def set_codec_line(text, want):
     return text
 
 
+def wants_gamepad(anchor):
+    """Whether this game's launcher passes Steam Input's virtual gamepad into its container (device.steam_gamepad):
+    deployment.json's choice (written at finalize), else its recipe's patches."""
+    try:
+        with open(os.path.join(anchor, "deployment.json")) as f:
+            dep = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(dep, dict):
+        return False
+    if "steam_gamepad" in dep:
+        return bool(dep["steam_gamepad"])
+    recipe = dep.get("recipe") if isinstance(dep.get("recipe"), dict) else {}
+    return GAMEPAD_PATCH in (recipe.get("patches") or [])
+
+
+def wrapper_lines(hw_video, gamepad):
+    """The launcher's Podman wrapper lines (empty, one or both). The gamepad line comes last, so FramePort's wrapper is
+    first on PATH and hands on to the codec wrapper."""
+    return "\n".join(line for line, want in ((VIDEO_CODEC_LINE, hw_video), (GAMEPAD_LINE, gamepad)) if want)
+
+
+def set_gamepad_line(text, want):
+    """A Lepton launcher with the gamepad line (want) or without it. It always follows the codec line (when there is
+    one), else stands where the codec line would."""
+    text = text.replace(GAMEPAD_LINE + "\n", "")
+    if not want:
+        return text
+    i = text.find(VIDEO_CODEC_LINE + "\n")
+    if i >= 0:
+        at = i + len(VIDEO_CODEC_LINE) + 1
+    else:
+        at = next((text.index(a) + 1 for a in ("\nchild=''\n", "\nsetsid ") if a in text), -1)
+    return text if at < 0 else text[:at] + GAMEPAD_LINE + "\n" + text[at:]
+
+
+# Android's layout for an Xbox 360 pad (AOSP's Vendor_045e_Product_028e.kl, with Select as BUTTON_SELECT instead of
+# BACK, which would close many apps): Steam's virtual pad reports Valve's ids, so Android would fall back to Generic.kl
+# (triggers on Z/RZ, right stick on RX/RY: games then mix up the right stick and the triggers).
+GAMEPAD_KL = """# Steam Input virtual gamepad (Xbox 360 layout). Written by FramePort (device.steam_gamepad).
+key 304   BUTTON_A
+key 305   BUTTON_B
+key 307   BUTTON_X
+key 308   BUTTON_Y
+key 310   BUTTON_L1
+key 311   BUTTON_R1
+key 314   BUTTON_SELECT
+key 315   BUTTON_START
+key 316   BUTTON_MODE
+key 317   BUTTON_THUMBL
+key 318   BUTTON_THUMBR
+axis 0x00 X flat 4096
+axis 0x01 Y flat 4096
+axis 0x03 Z flat 4096
+axis 0x04 RZ flat 4096
+axis 0x02 LTRIGGER
+axis 0x05 RTRIGGER
+axis 0x10 HAT_X
+axis 0x11 HAT_Y
+"""
+BTN_SOUTH = 0x130  # BTN_A / BTN_GAMEPAD: Linux's gamepad button range starts here
+
+
+def has_key_bit(caps, code):
+    """Whether a sysfs capabilities/key bitmap (hex words, most significant first, one per long) has `code`."""
+    words = caps.split()
+    bits = 8 * struct.calcsize("l")  # the kernel's long (64 on the Frame); words aren't zero-padded
+    index = len(words) - 1 - code // bits
+    try:
+        return index >= 0 and bool(int(words[index], 16) >> (code % bits) & 1)
+    except ValueError:
+        return False
+
+
+def steam_gamepads(sys_root="/sys", dev_root="/dev"):
+    """Steam Input's virtual gamepads ([{event, product, name}]): input devices Steam creates through uinput
+    (/sys/devices/virtual/input) with Valve's vendor id (28de) and gamepad buttons. Steam names them "Microsoft X-Box
+    360 pad N" (seen on the Frame; older clients "Steam Virtual Gamepad"); Valve's other virtual devices (e.g.
+    steamos-manager's keys, 28de:0000) have no gamepad buttons."""
+    pads = []
+    for sys_event in sorted(glob.glob(os.path.join(sys_root, "class/input/event*")),
+                            key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0)):
+        event = os.path.basename(sys_event)
+        device = os.path.join(sys_event, "device")
+
+        def read(rel, device=device):
+            try:
+                with open(os.path.join(device, rel)) as f:
+                    return f.read().strip()
+            except OSError:
+                return ""
+        if read("id/vendor").lower() != "28de" or not has_key_bit(read("capabilities/key"), BTN_SOUTH):
+            continue
+        if "/devices/virtual/" not in os.path.realpath(device) + "/":
+            continue  # Valve hardware itself (a Steam Deck's controls): Steam Input reads it and makes a virtual pad
+        node = os.path.join(dev_root, "input", event)
+        if not os.path.exists(node) or not os.access(node, os.R_OK | os.W_OK):
+            continue
+        pads.append({"event": event, "product": read("id/product").lower() or "0000", "name": read("name")})
+    return pads
+
+
+def podman_run_args(args, env, sys_root="/sys", dev_root="/dev"):
+    """FramePort's Podman wrapper (PODMAN_WRAPPER) for `podman run`: the game's own container
+    (lepton-steamlaunch-<SteamAppId>, launcher env) gets Steam's virtual gamepads and their key layout when its
+    launcher asked for them (FRAMEPORT_GAMEPAD=1, the gamepad line). Anything else: the arguments unchanged. Lepton
+    mounts a tmpfs over /dev, so a `--device` node would vanish under it: bind mounts, like Lepton's own GPU nodes."""
+    if args[:1] != ["run"] or env.get("FRAMEPORT_GAMEPAD") != "1" or \
+            env.get("FRAMEPORT_NO_GAMEPAD", "0") not in ("", "0"):
+        return args
+    appid = env.get("SteamAppId", "")
+    name = None
+    for i, arg in enumerate(args):
+        if arg == "--name" and i + 1 < len(args):
+            name = args[i + 1]
+        elif arg.startswith("--name="):
+            name = arg.partition("=")[2]
+    if not re.fullmatch(r"[0-9]+", appid) or name != f"lepton-steamlaunch-{appid}":
+        return args
+    taken = set()
+    for i, arg in enumerate(args):  # destinations Lepton mounts itself (a future Lepton passing pads through)
+        spec = args[i + 1] if arg == "--mount" and i + 1 < len(args) else arg.partition("=")[2] \
+            if arg.startswith("--mount=") else ""
+        for item in spec.split(","):
+            key, _, value = item.partition("=")
+            if key in ("destination", "target", "dst"):
+                taken.add(value)
+    pads = steam_gamepads(sys_root, dev_root)
+    extra = []
+    for pad in pads:
+        node = f"/dev/input/{pad['event']}"
+        if node not in taken:
+            extra += ["--mount", f"type=bind,source={os.path.join(dev_root, 'input', pad['event'])},"
+                                 f"destination={node},rw"]
+    layout = gamepad_layout_file() if extra else ""
+    for product in sorted({p["product"] for p in pads}):
+        target = f"/system/usr/keylayout/Vendor_28de_Product_{product}.kl"
+        if layout and target not in taken and re.fullmatch(r"[0-9a-f]{4}", product):
+            extra += ["--mount", f"type=bind,source={layout},destination={target},ro"]
+    names = ", ".join(f"{p['event']} ({p['name']}, 28de:{p['product']})" for p in pads) or "none"
+    print(f"FramePort gamepad: Steam Input virtual gamepads for this container: {names}", file=sys.stderr)
+    return [args[0], *extra, *args[1:]] if extra else args
+
+
+def gamepad_layout_file():
+    path = os.path.join(os.path.dirname(PODMAN_BIN), "steam-gamepad.kl")
+    try:
+        with open(path) as f:
+            if f.read() == GAMEPAD_KL:
+                return path
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        f.write(GAMEPAD_KL)
+    os.replace(tmp, path)
+    return path
+
+
+# FramePort's Podman wrapper (agent/bin/podman). Small on purpose: every Podman call Lepton makes goes through it while
+# a launcher has it on PATH, so only `run` loads the agent (podman_run_args); everything else, and any failure, goes
+# straight to the next Podman on PATH: the one after this folder (the codec wrapper of a game with hardware video
+# decoding, else Podman itself), with this folder taken off PATH so the next wrapper can't come back here.
+PODMAN_WRAPPER = r'''#!/usr/bin/python3
+"""FramePort's Podman wrapper (written by frameport_agent.py: ensure_podman_wrapper; see podman_run_args)."""
+import os
+import shutil
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def chain():
+    """The next Podman (after this folder on PATH, else the first other one) and PATH without this folder."""
+    own = os.path.realpath(__file__)
+    entries = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    mine = [i for i, e in enumerate(entries) if os.path.realpath(e or os.curdir) == HERE]
+    order = entries[mine[0] + 1:] if mine else entries
+    for entry in order + ["/usr/local/bin", "/usr/bin", "/bin"]:
+        folder = os.path.realpath(entry or os.curdir)
+        found = shutil.which("podman", path=folder) if folder != HERE else None
+        if found and os.path.realpath(found) != own:
+            return found, os.pathsep.join(e for i, e in enumerate(entries) if i not in mine)
+    sys.exit("FramePort: no Podman found after its wrapper")
+
+
+podman, path = chain()
+args = sys.argv[1:]
+env = dict(os.environ, PATH=path)
+if args[:1] == ["run"]:
+    try:
+        sys.path.insert(0, os.path.dirname(HERE))
+        import frameport_agent
+        args = frameport_agent.podman_run_args(args, env)
+    except Exception as exc:  # a gamepad problem must never stop the game's container from starting
+        print(f"FramePort: Podman wrapper left the arguments unchanged: {exc}", file=sys.stderr)
+        args = sys.argv[1:]
+os.execve(podman, [podman, *args], env)
+'''
+
+
+def ensure_podman_wrapper():
+    """Write FramePort's Podman wrapper (PODMAN_BIN/podman) when it is missing or differs; returns whether it was
+    written. Launchers only use it while their gamepad line is there."""
+    path = os.path.join(PODMAN_BIN, "podman")
+    try:
+        with open(path) as f:
+            if f.read() == PODMAN_WRAPPER and os.access(path, os.X_OK):
+                return False
+    except OSError:
+        pass
+    os.makedirs(PODMAN_BIN, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        f.write(PODMAN_WRAPPER)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, path)
+    return True
+
+
 def remove_old_codec_dirs():
     """Agent <= 70 extracted a per-game codec into <base>/frameport-codec; the shared codec replaced it. Removed
     once the game's launcher no longer uses it (upgrade_launchers converted it; the choice is in deployment.json or
@@ -2426,19 +3354,20 @@ def upgrade_linux_launcher(text):
         text = text.replace(old_if, 'if [[ -z "${FRAMEPORT_DESKTOP:-}" && -z "${DISPLAY:-}" ]]; then', 1)
     if "\nparent=$PPID\n" in text:
         text = text.replace("\nparent=$PPID\n",
-                            '\nparent=$PPID\n[[ -n "${FRAMEPORT_DESKTOP:-}" ]] && parent=1\n', 1)
+                            '\nparent=$PPID\n[[ -n "${FRAMEPORT_DESKTOP:-}${FRAMEPORT_OVERLAY:-}" ]] && parent=1\n', 1)
     return text
 
 
-def write_launcher(anchor, base, pkg, title, appid, lepton, env, hw_video=False):
+def write_launcher(anchor, base, pkg, title, appid, lepton, env, hw_video=False, gamepad=False, config_sync=False):
     extra = "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in (env or {}).items()
                     if re.fullmatch(r"[A-Z_][A-Z0-9_]*", k))
     text = LAUNCH_SH.format(title=title.replace("\n", " "), pkg=pkg, base_q=shlex.quote(base), appid=appid,
                             lepton_q=shlex.quote(lepton), extra_env=extra, watchdog=WATCHDOG,
                             dashboard=dashboard_line(), logcat=logcat_line(), single=SINGLE_LINE,
-                            video_codec=VIDEO_CODEC_LINE if hw_video else "",
+                            video_codec=wrapper_lines(hw_video, gamepad),
                             plays_start=plays_lines(anchor)[0],
                             plays_end=plays_lines(anchor)[1])
+    text = set_config_sync_line(text, pkg, config_sync)
     path = os.path.join(anchor, "launch.sh")
     with open(path + ".tmp", "w") as f:
         f.write(text)
@@ -2448,6 +3377,187 @@ def write_launcher(anchor, base, pkg, title, appid, lepton, env, hw_video=False)
 
 def data_files_dir(base, pkg):
     return os.path.join(base, "lepton-data/external/Android/data", pkg, "files")
+
+
+# ------------------------------------------------- saved game settings in step with the eye buffers (agent v78)
+# device.config_sync (per game, from its recipe; deployment.json "config_sync": {file relative to the game's
+# Android/data/<pkg>/files: {setting: expression}}). Some games save their render resolution and load it after they
+# created the headset's eye buffers: BlazeRush creates 2938x2938 buffers at scale 1.7, then loads its saved
+# user_config.xml (r_3dwidth/r_3dheight 1728, r_width/r_height 3072x1728) and draws a displaced, stretched picture with
+# black borders (Klownicle's guide, GitHub #57). The values are written while the game is stopped: at finalize, after
+# a Game settings change, and by the launcher before Lepton starts (the game rewrites its file when it exits, so a scale
+# changed while it ran is caught at the next start). The eye buffer = the runtime's recommended size (learned from the
+# game's last launch.log: FrameBridge logs it; older builds: the bridge's stereo= size divided by the logged scale)
+# times settings.conf's scale, rounded like FrameBridge does. Only existing numeric entries change; the previous file
+# is kept as <file>.frameport-backup and the new one replaces it atomically.
+CONFIG_EXPR_RE = re.compile(r"\s*([wh])\s*(?:\*\s*(\d+(?:\.\d+)?))?\s*(?:/\s*(\d+(?:\.\d+)?))?\s*")
+CONFIG_SYNC_LINE = 'python3 {agent_q} _config_sync {pkg_q} >"$app_dir/config-sync.log" 2>&1 9>&- || true'
+CONFIG_BACKUP = ".frameport-backup"
+RUNTIME_EYE_RE = re.compile(r"FrameBridge: runtime recommended eye size (\d+)x(\d+)")
+BRIDGE_STEREO_RE = re.compile(r"OVRPortVrApi: Initialized .*?stereo=(\d+)x(\d+)")
+ADAPTER_VIEW_RE = re.compile(r"FrameBridge: view 0 recommended (\d+)x(\d+)")
+ADAPTER_SCALE_RE = re.compile(r"FrameBridge: scale=([0-9.]+) ")
+
+
+def config_value(expr, w, h):
+    """An expression of the eye-buffer size: w, h, optionally *a and/or /b (for example h*16/9), rounded."""
+    m = CONFIG_EXPR_RE.fullmatch(str(expr))
+    if not m:
+        raise AgentError(f"bad config_sync expression {expr!r}")
+    value = (w if m.group(1) == "w" else h) * float(m.group(2) or 1) / float(m.group(3) or 1)
+    if not 0 < value < 1e6:
+        raise AgentError(f"config_sync expression {expr!r} out of range")
+    return int(value + 0.5)
+
+
+def settings_scale(base):
+    """FrameBridge's resolution scale for this game (settings.conf; out-of-range values are ignored like FrameBridge
+    does)."""
+    scale = 1.0
+    try:
+        for line in open(os.path.join(base, "settings.conf")):
+            k, _, v = line.strip().partition("=")
+            if k == "scale":
+                try:
+                    value = float(v)
+                except ValueError:
+                    continue
+                if 0.5 <= value <= 2.0:
+                    scale = value
+    except OSError:
+        pass
+    return scale
+
+
+def runtime_eye_size(base):
+    """(width, height) the Frame's runtime recommends per eye before FrameBridge's scale, from the game's last
+    launch.log / session.log, or None."""
+    for name in ("launch.log", "session.log"):
+        try:
+            with open(os.path.join(base, name), errors="replace") as f:
+                text = f.read(16 << 20)
+        except OSError:
+            continue
+        found = RUNTIME_EYE_RE.findall(text)
+        if found:
+            return int(found[-1][0]), int(found[-1][1])
+        scales = ADAPTER_SCALE_RE.findall(text)
+        sized = BRIDGE_STEREO_RE.findall(text) or ADAPTER_VIEW_RE.findall(text)
+        if sized and scales:
+            try:
+                scale = float(scales[-1])
+            except ValueError:
+                continue
+            if 0.5 <= scale <= 2.0:
+                return int(int(sized[-1][0]) / scale + 0.5), int(int(sized[-1][1]) / scale + 0.5)
+    return None
+
+
+def sync_config_text(text, values):
+    """(new text, {name: (old, new)}, [names not found]) with the numeric value of every named setting replaced; the
+    rest of the text stays byte for byte. Matches <x name="NAME" ... value="V">, <x value="V" ... name="NAME">,
+    <NAME value="V"/> and <NAME>V</NAME>."""
+    changed, missing = {}, []
+    num = r"-?\d+(?:\.\d+)?"
+    for name, new in values.items():
+        n = re.escape(name)
+        patterns = (rf"""(<[^<>]*\bname\s*=\s*["']{n}["'][^<>]*?\bvalue\s*=\s*["'])({num})(["'])""",
+                    rf"""(<[^<>]*?\bvalue\s*=\s*["'])({num})(["'][^<>]*\bname\s*=\s*["']{n}["'])""",
+                    rf"""(<{n}\b[^<>]*?\bvalue\s*=\s*["'])({num})(["'])""",
+                    rf"""(<{n}>\s*)({num})(\s*</{n}>)""")
+        for pattern in patterns:
+            m = re.search(pattern, text)
+            if m:
+                old = m.group(2)
+                if old != str(new):
+                    text = text[:m.start(2)] + str(new) + text[m.end(2):]
+                    changed[name] = (old, str(new))
+                break
+        else:
+            missing.append(name)
+    return text, changed, missing
+
+
+def sync_game_config(pkg, dep, check_running=True):
+    """Write the eye-buffer size into the game's saved settings (device.config_sync). Returns a report (None when the
+    game has no rules)."""
+    rules = (dep or {}).get("config_sync") or {}
+    if not isinstance(rules, dict) or not rules:
+        return None
+    base = dep["base"]
+    if check_running and dep.get("appid") and container_running(dep["appid"]):
+        return {"skipped": "the game is running (its next start corrects it)"}
+    runtime = runtime_eye_size(base)
+    if runtime and runtime != tuple(dep.get("eye_base") or ()):
+        dep["eye_base"] = list(runtime)
+        try:
+            write_deployment(pkg, dep)
+        except OSError:
+            pass
+    runtime = runtime or tuple(dep.get("eye_base") or ())
+    if len(runtime) != 2:
+        return {"skipped": "the Frame's eye-buffer size isn't known yet (it is after the game's first start)"}
+    scale = settings_scale(base)
+    w, h = int(runtime[0] * scale + 0.5), int(runtime[1] * scale + 0.5)
+    files_dir = os.path.realpath(data_files_dir(base, pkg))
+    out = {"eye": [w, h], "runtime": list(runtime), "scale": scale, "changed": {}, "missing": [], "files": []}
+    for rel, exprs in rules.items():
+        target = os.path.realpath(os.path.join(files_dir, str(rel)))
+        if not target.startswith(files_dir + os.sep) or not isinstance(exprs, dict):
+            out["missing"].append(str(rel))
+            continue
+        if not os.path.isfile(target):
+            out["files"].append({"file": rel, "exists": False})  # the game writes it itself, from the right size
+            continue
+        values = {str(k): config_value(v, w, h) for k, v in exprs.items()}
+        with open(target, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            text = f.read()
+        new, changed, missing = sync_config_text(text, values)
+        out["missing"] += [f"{rel}:{k}" for k in missing]
+        out["files"].append({"file": rel, "exists": True, "changed": sorted(changed)})
+        if not changed:
+            continue
+        shutil.copy2(target, target + CONFIG_BACKUP)
+        tmp = target + ".frameport-tmp"
+        with open(tmp, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+            f.write(new)
+        shutil.copymode(target, tmp)
+        os.replace(tmp, target)
+        out["changed"].update(changed)
+    return out
+
+
+def wants_config_sync(anchor):
+    try:
+        with open(os.path.join(anchor, "deployment.json")) as f:
+            dep = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(dep, dict) and isinstance(dep.get("config_sync"), dict) and bool(dep["config_sync"])
+
+
+def set_config_sync_line(text, pkg, want):
+    """A Lepton launcher that brings the game's saved settings in step before Lepton starts (want), or without it."""
+    text = "".join(line for line in text.splitlines(True) if " _config_sync " not in line)
+    if not want or "\nsetsid " not in text:
+        return text
+    line = CONFIG_SYNC_LINE.format(agent_q=shlex.quote(os.path.abspath(__file__)), pkg_q=shlex.quote(pkg))
+    return text.replace("\nsetsid ", f"\n{line}\nsetsid ", 1)
+
+
+def config_sync_worker(pkg):
+    """launch.sh, before Lepton starts (the game isn't running: the launcher holds its launch lock)."""
+    dep = deployment(check_pkg(pkg))
+    print(json.dumps({"time": time.time(), "result": sync_game_config(pkg, dep, check_running=False) if dep else None}))
+
+
+def cmd_config_sync(args):
+    """Bring a game's saved settings in step with the eye buffers now (device.config_sync), unless it runs."""
+    pkg = check_pkg(args["package"])
+    dep = deployment(pkg)
+    if not dep:
+        raise AgentError(f"{pkg} is not installed")
+    return sync_game_config(pkg, dep)
 
 
 def cmd_video_codec_status(args):
@@ -2640,18 +3750,28 @@ def cmd_finalize(args):
     models = install_controller_models(files_dir, str(settings.get("controller_models", 0)) not in ("0", "0.0"))
     recipe = args.get("recipe") if isinstance(args.get("recipe"), dict) else {}
     hw_video = HW_VIDEO_PATCH in (recipe.get("patches") or [])  # the shared codec (install_video_codec)
-    write_launcher(anchor, base, pkg, title, appid, lepton, args.get("env"), hw_video)
+    gamepad = GAMEPAD_PATCH in (recipe.get("patches") or [])  # Steam Input's virtual gamepad (PODMAN_WRAPPER)
+    if gamepad:
+        ensure_podman_wrapper()
+    config_sync = args.get("config_sync") if isinstance(args.get("config_sync"), dict) else {}
+    write_launcher(anchor, base, pkg, title, appid, lepton, args.get("env"), hw_video, gamepad, bool(config_sync))
     art_in = os.path.join(base, "incoming-artwork")
     if os.path.isdir(art_in):
         shutil.rmtree(os.path.join(anchor, "artwork"), ignore_errors=True)
         shutil.move(art_in, os.path.join(anchor, "artwork"))
+    previous = deployment(pkg) or {}
     dep = {"package": pkg, "appid": int(appid), "base": base, "title": title, "tags": args.get("tags") or [],
            "apk": args.get("apk_name", "game.apk"),
            "sha256": args.get("apk_sha256"), "recipe": args.get("recipe"), "installed_by": "frameport",
-           "hw_video_decode": hw_video, "agent_version": AGENT_VERSION, "time": time.time()}
+           "hw_video_decode": hw_video, "steam_gamepad": gamepad, "config_sync": config_sync,
+           "agent_version": AGENT_VERSION, "time": time.time()}
+    if previous.get("eye_base"):  # the runtime's eye size learned from an earlier start (device.config_sync)
+        dep["eye_base"] = previous["eye_base"]
     with open(os.path.join(anchor, "deployment.json"), "w") as f:
         json.dump(dep, f, indent=2)
-    return {"ok": True, "base": base, "appid": appid, "moved_data_files": moved, "controller_models": models}
+    synced = sync_game_config(pkg, dep)
+    return {"ok": True, "base": base, "appid": appid, "moved_data_files": moved, "controller_models": models,
+            "config_sync": synced}
 
 
 # --------------------------------------------------------------- Steam Frame controller models (XR_FB_render_model)
@@ -3225,7 +4345,19 @@ def cmd_finalize_pcvr(args):
            "agent_version": AGENT_VERSION, "time": time.time()}
     with open(os.path.join(anchor, "deployment.json"), "w") as f:
         json.dump(dep, f, indent=2)
-    return {"ok": True, "base": base, "appid": appid, "moved_files": moved, "proton": tool["name"]}
+    overlay = finalize_overlay(pkg, args.get("overlay"))
+    return {"ok": True, "base": base, "appid": appid, "moved_files": moved, "proton": tool["name"], "overlay": overlay}
+
+
+def finalize_overlay(pkg, overlay):
+    """An install's overlay choice ({autostart, app, manifest_dir} = a SteamVR overlay app, None = not one):
+    register or unregister it with SteamVR. Returns register_vr_overlay's result, or None."""
+    if overlay:
+        return cmd_register_vr_overlay({"package": pkg, "autostart": bool(overlay.get("autostart")),
+                                        "app": overlay.get("app"), "manifest_dir": overlay.get("manifest_dir")})
+    if os.path.exists(os.path.join(ANCHORS, pkg, OVERLAY_MANIFEST)):  # no longer one (the user turned it off)
+        cmd_unregister_vr_overlay({"package": pkg})
+    return None
 
 
 # ------------------------------------------------------------------------------------------ Linux apps (arm64)
@@ -3249,8 +4381,9 @@ if [[ -z "${{FRAMEPORT_DESKTOP:-}}" && -z "${{DISPLAY:-}}" ]]; then
     fi
 fi
 {extra_env}parent=$PPID
-# Desktop Mode's launcher exits right after starting this: no Steam parent to watch
-[[ -n "${{FRAMEPORT_DESKTOP:-}}" ]] && parent=1
+# Desktop Mode's launcher exits right after starting this: no Steam parent to watch; SteamVR overlay apps
+# (FRAMEPORT_OVERLAY) are started by SteamVR and run next to games
+[[ -n "${{FRAMEPORT_DESKTOP:-}}${{FRAMEPORT_OVERLAY:-}}" ]] && parent=1
 {exe_q} "$@" >{log_q} 2>&1 &
 child=$!
 trap 'kill -TERM $child 2>/dev/null' INT TERM
@@ -3382,7 +4515,10 @@ def cmd_finalize_linux(args):
     # ldd can't read x86_64 programs here: their libraries come from FEX's x86 root (/usr/share/guestos/fex-mesa)
     missing = [] if x86 else missing_libraries(app, appimage_programs(run_dir) if appimage else [exe])
     os.makedirs(anchor, exist_ok=True)
-    write_linux_launcher(anchor, base, pkg, title, exe_rel, appimage, prefix, args.get("env"))
+    env = dict(args.get("env") or {})
+    if args.get("overlay"):
+        env["FRAMEPORT_OVERLAY"] = "1"
+    write_linux_launcher(anchor, base, pkg, title, exe_rel, appimage, prefix, env)
     art_in = os.path.join(base, "incoming-artwork")
     if os.path.isdir(art_in):
         shutil.rmtree(os.path.join(anchor, "artwork"), ignore_errors=True)
@@ -3408,8 +4544,9 @@ def cmd_finalize_linux(args):
             remove_desktop_entries(pkg)
     except OSError:
         pass
+    overlay = finalize_overlay(pkg, args.get("overlay"))
     return {"ok": True, "base": base, "appid": appid, "moved_files": moved, "missing_libraries": missing,
-            "desktop_entry": desktop, "app_icon": app_icon_result(own_icon)}
+            "desktop_entry": desktop, "app_icon": app_icon_result(own_icon), "overlay": overlay}
 
 
 def write_linux_launcher(anchor, base, pkg, title, exe_rel, appimage, prefix, env):
@@ -3892,7 +5029,43 @@ def cmd_set_settings(args):
     with open(os.path.join(files_dir, "framebridge.conf"), "w") as f:
         f.write(text)
     models = install_controller_models(files_dir, current.get("controller_models", "0") not in ("0", "0.0"))
-    return {"settings": current, "controller_models": models}
+    return {"settings": current, "controller_models": models, "config_sync": sync_game_config(pkg, dep)}
+
+
+TITLE_MAX = 128
+
+
+def clean_title(title):
+    """A game's name for its Steam shortcut: one line, no control characters, at most TITLE_MAX characters."""
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(title or "")).split())
+    if not text:
+        raise AgentError("the new name is empty")
+    return text[:TITLE_MAX]
+
+
+def cmd_rename(args):
+    """Rename an installed game (agent v77): deployment.json's title is what its Steam shortcut shows. The shortcut
+    keeps its appid (upsert_shortcut matches by Exe, deployment.json keeps the appid), so Play, its grid art, launch
+    tests and the game's container stay the same. shortcuts (default on) rewrites the library entry like an install
+    does (Steam restarts once, after a running game or Desktop Mode). A devkit entry is named by its id: unchanged."""
+    pkg = check_pkg(args["package"])
+    title = clean_title(args.get("title"))
+    dep = deployment(pkg)
+    if not dep or not dep.get("appid"):
+        raise AgentError(f"{pkg} is not installed")
+    old = dep.get("title") or pkg
+    out = {"package": pkg, "title": title, "old": old, "appid": dep["appid"], "renamed": old != title}
+    if out["renamed"]:
+        dep["title"] = title
+        write_deployment(pkg, dep)
+        if (dep.get("overlay") or {}).get("registered"):  # its SteamVR manifest shows the name too
+            try:
+                register_overlay(pkg, bool(dep["overlay"].get("autostart")))
+            except Exception as exc:  # noqa: BLE001 - the shortcut matters more
+                out["overlay_error"] = str(exc)
+    out["shortcuts"] = cmd_shortcuts({"packages": [pkg], "restart": True}) \
+        if args.get("shortcuts", True) and out["renamed"] else {"started": False}
+    return out
 
 
 def cmd_uninstall(args):
@@ -3905,6 +5078,8 @@ def cmd_uninstall(args):
     linux = dep.get("kind") == "linux"
     if (pcvr_pids(base) if pcvr or linux else container_running(dep["appid"])):
         raise AgentError("the game is running")
+    if is_overlay(dep) or os.path.exists(os.path.join(ANCHORS, pkg, OVERLAY_MANIFEST)):
+        unregister_overlay(pkg)  # SteamVR forgets the overlay app (before its manifest's folder goes)
     keep_data = args.get("keep_data", True)
     names = ("game", "revive", "xrlayer", "shadercache", "incoming", "incoming-artwork") if pcvr else \
         ("app", "incoming", "incoming-artwork", "launch.log", "session.log") if linux else \
@@ -3936,6 +5111,8 @@ def cmd_uninstall(args):
         for name in ("deployment.json", "launch.sh", "artwork", "launch.log", "launch-test.log", "session.log"):
             p = os.path.join(anchor, name)
             remove_tree(p)
+    if is_overlay(dep):
+        overlay_service_quiet()  # the last autostart overlay app gone: the service goes too
     return {"removed": True, "kept_saves": keep_data, "shortcut_removed": removed_sc}
 
 
@@ -4359,6 +5536,9 @@ def cmd_launch_test(args):
     anchor = os.path.join(ANCHORS, pkg)
     log = os.path.join(dep["base"], "launch.log")
     appid = dep["appid"]
+    if is_overlay(dep):  # nothing to see without a game; register_vr_overlay's SteamVR check is the test
+        return {"state": "SKIPPED", "skipped": "overlay app", "elapsed": 0, "log": None, "log_size": 0,
+                "crash_log": None, "kind": dep.get("kind")}
     if dep.get("kind") == "pcvr":
         return launch_test_pcvr(dep, anchor, log, seconds)
     if dep.get("kind") == "linux":
@@ -4661,6 +5841,191 @@ def _tail(path, max_bytes):
         return None
 
 
+# shader dumps in a game's files dir: the Vulkan shim's vk_shader_dump and the shader-fix layer's zink_shader_dump
+SHADER_DUMP_DIRS = ("fp_vk_shaders", "fp_spirv")
+SHADER_DUMP_BYTES = 4 << 20  # without an index: newest modules per folder (by time written), base64 on the wire
+SHADER_DUMP_FILES = 200
+SHADER_SESSION_BYTES = 30 << 20  # with an index: the newest session's modules, up to this much in all
+SHADER_MODULE_BYTES = 4 << 20  # larger modules are left out
+SHADER_INDEX_READ = 64 << 20  # index.txt bytes looked at (from the end) for the newest session
+SHADER_INDEX_BYTES = 4 << 20  # index text sent (the newest session's lines)
+_SPV_NAME = re.compile(r"\d+_[0-9a-f]{64}\.spv")
+
+
+def shader_session(index_path):
+    """(index text from the newest "# start" line on, [module names of that session, last used first]) from a
+    vk_shader_dump index.txt (`<seq> <ms> <unix ms> <size>_<sha256>.spv new|known|again|failed` lines, one
+    "# start <unix s> pid <pid>" per process), or None without an index or a module line in its newest session."""
+    try:
+        size = os.path.getsize(index_path)
+        with open(index_path, "rb") as f:
+            if size > SHADER_INDEX_READ:
+                f.seek(size - SHADER_INDEX_READ)
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    first = max((i for i, ln in enumerate(lines) if ln.startswith("# start")), default=0)
+    session = lines[first:]
+    names, seen = [], set()
+    for ln in reversed(session):
+        parts = ln.split()
+        if len(parts) >= 4 and _SPV_NAME.fullmatch(parts[3]) and parts[3] not in seen:
+            seen.add(parts[3])
+            names.append(parts[3])
+    if not names:
+        return None
+    body = "\n".join(session) + "\n"
+    if len(body) > SHADER_INDEX_BYTES:
+        body = f"[... first {len(body) - SHADER_INDEX_BYTES} characters cut ...]\n" + body[-SHADER_INDEX_BYTES:]
+    elif first > 0 or size > SHADER_INDEX_READ:
+        body = "[... earlier sessions left out ...]\n" + body
+    return body, names
+
+
+def shader_dumps(files_dir, max_bytes=SHADER_DUMP_BYTES, session_bytes=SHADER_SESSION_BYTES):
+    """{dir: {"index": index text, "modules": {name: base64}, "total": n, "skipped": n[, "session": n]}} for the
+    dump folders in a game's files dir. With an index.txt naming modules (vk_shader_dump): every module named in its
+    newest session (= process start), last used first, each <= SHADER_MODULE_BYTES, up to session_bytes in all
+    ("session" = how many it names). A GPU hang can come seconds after the culprit was created, so "newest written"
+    missed it (GitHub #140). Without one (fp_spirv): the newest modules (by time written) up to max_bytes. Unreadable
+    files are skipped (the app writes them inside its container). The reply is one JSON line on the SSH channel's
+    stdout (~40 MB base64 at most): the PC reads it whole, which is fine at that size."""
+    out = {}
+    for d in SHADER_DUMP_DIRS:
+        path = os.path.join(files_dir, d)
+        try:
+            names = [n for n in os.listdir(path) if n.endswith(".spv")]
+        except OSError:
+            continue
+        res = {"total": len(names), "modules": {}, "skipped": 0}
+        session = shader_session(os.path.join(path, "index.txt"))
+        if session is not None:
+            res["index"], order = session
+            res["session"] = len(order)
+            budget, per_module = session_bytes, SHADER_MODULE_BYTES
+        else:
+            index = _tail(os.path.join(path, "index.txt"), 1 << 20)
+            if index is not None:
+                res["index"] = index
+            mods = []
+            for n in names:
+                try:
+                    mods.append((os.path.getmtime(os.path.join(path, n)), n))
+                except OSError:
+                    pass
+            mods.sort(reverse=True)
+            order = [n for _, n in mods[:SHADER_DUMP_FILES]]
+            budget, per_module = max_bytes, max_bytes
+        used = 0
+        for n in order:
+            try:
+                with open(os.path.join(path, n), "rb") as f:
+                    data = f.read(min(per_module, budget - used) + 1)
+            except OSError:
+                res["skipped"] += 1
+                continue
+            if used + len(data) > budget or len(data) > per_module:
+                if session is None:
+                    break
+                res["skipped"] += 1  # too big: a smaller, older one may still fit
+                continue
+            used += len(data)
+            res["modules"][n] = base64.b64encode(data).decode("ascii")
+        out[d] = res
+    return out
+
+
+# arm64 syscall numbers seen in stuck threads (/proc/<tid>/syscall gives the number)
+ARM64_SYSCALLS = {22: "epoll_pwait", 29: "ioctl", 56: "openat", 63: "read", 64: "write", 73: "ppoll",
+                  98: "futex", 101: "nanosleep", 115: "clock_nanosleep", 203: "connect", 206: "sendto",
+                  207: "recvfrom", 212: "recvmsg", 260: "wait4"}
+TCP_STATES = {"01": "ESTABLISHED", "02": "SYN_SENT", "03": "SYN_RECV", "04": "FIN_WAIT1", "05": "FIN_WAIT2",
+              "06": "TIME_WAIT", "07": "CLOSE", "08": "CLOSE_WAIT", "09": "LAST_ACK", "0A": "LISTEN", "0B": "CLOSING"}
+
+
+def _remote_kind(hexaddr):
+    """/proc/net/tcp(6) remote address → loopback / local / internet (never the address itself: it would need
+    redacting, and what matters is whether the game waits on the internet)."""
+    import ipaddress
+    try:
+        raw = bytes.fromhex(hexaddr)
+        if len(raw) == 4:
+            ip = ipaddress.IPv4Address(raw[::-1])
+        else:  # four little-endian 32-bit words
+            ip = ipaddress.IPv6Address(b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4)))
+            ip = ip.ipv4_mapped or ip
+    except ValueError:
+        return "?"
+    if ip.is_unspecified:
+        return "none"
+    if ip.is_loopback:
+        return "loopback"
+    return "local" if ip.is_private or ip.is_link_local else "internet"
+
+
+def game_threads(pkg, proc=None, samples=3, gap=1.0, sleep=time.sleep):
+    """What a running (e.g. stuck) Android game's threads are doing (GitHub #157): for every process of `pkg` (its
+    main process and `pkg:<name>` ones), each thread's state, CPU time used over the sampled seconds, kernel wait
+    channel and current syscall, plus its TCP sockets. Readable as steamos: the container's user namespace belongs to
+    steamos. None when the game isn't running."""
+    proc = proc or PROC
+    pids = []
+    for d in os.listdir(proc):
+        if not d.isdigit():
+            continue
+        cmd = (_rd(os.path.join(proc, d, "cmdline")) or "").split("\0")[0]
+        if cmd == pkg or cmd.startswith(pkg + ":"):
+            pids.append((int(d), cmd))
+    if not pids:
+        return None
+
+    def cpu(pid):
+        out = {}
+        for t in os.listdir(os.path.join(proc, str(pid), "task")) if os.path.isdir(os.path.join(proc, str(pid),
+                                                                                                  "task")) else []:
+            st = _rd(os.path.join(proc, str(pid), "task", t, "stat")) or ""
+            f = st[st.rfind(")") + 2:].split()
+            if len(f) > 12:
+                out[t] = (f[0], int(f[11]) + int(f[12]))
+        return out
+
+    first = {pid: cpu(pid) for pid, _ in sorted(pids)}
+    for _ in range(max(0, samples - 1)):
+        sleep(gap)
+    span = max(0, samples - 1) * gap
+    lines = [f"# threads of the running game {pkg}; cpu_ms = CPU time used in {span:g} s, wchan = kernel wait, "
+             "syscall = what the thread is blocked in"]
+    for pid, cmd in sorted(pids):
+        last = cpu(pid)
+        lines.append(f"\n## process {cmd} (pid {pid}, {len(last)} threads)")
+        lines.append(f"{'tid':>7} st {'cpu_ms':>7}  {'comm':<16} {'wchan':<24} syscall")
+        rows = []
+        for tid, (state, ticks) in last.items():
+            used = (ticks - first.get(pid, {}).get(tid, (state, ticks))[1]) * 1000 // CLK_TCK
+            tdir = os.path.join(proc, str(pid), "task", tid)
+            comm = (_rd(os.path.join(tdir, "comm")) or "?").strip()
+            wchan = (_rd(os.path.join(tdir, "wchan")) or "?").strip() or "-"
+            sc = (_rd(os.path.join(tdir, "syscall")) or "?").split()
+            call = sc[0] if sc else "?"
+            if call.isdigit():
+                call = ARM64_SYSCALLS.get(int(call), "syscall " + call)
+            rows.append((-used, int(tid), f"{tid:>7} {state:>2} {used:>7}  {comm:<16} {wchan:<24} {call}"))
+        lines += [r[2] for r in sorted(rows)]
+        socks = []
+        for name in ("tcp", "tcp6"):
+            for ln in (_rd(os.path.join(proc, str(pid), "net", name)) or "").splitlines()[1:]:
+                f = ln.split()
+                if len(f) > 3 and ":" in f[2]:
+                    addr, port = f[2].rsplit(":", 1)
+                    socks.append(f"{name:<4} {TCP_STATES.get(f[3], f[3]):<12} remote={_remote_kind(addr)}"
+                                 f":{int(port, 16)}")
+        if socks:
+            lines.append("# TCP sockets (remote = loopback / local network / internet, and port)")
+            lines += sorted(set(socks))
+    return "\n".join(lines) + "\n"
+
+
 def cmd_collect_diag(args):
     """Everything useful for debugging without the game or the PC app: host runtime facts and, with a package, the
     game's launcher, settings, deployment, logs (launch, Lepton logcat, Proton/Revive/Unreal) and its file listing.
@@ -4741,6 +6106,17 @@ def cmd_collect_diag(args):
     for p in sorted(cands, key=lambda p: next((i for i, k in enumerate(order) if k in os.path.basename(p)), 9)):
         name = os.path.basename(p)
         files[name if name.startswith("logcat") else "logcat-" + name] = _tail(p, max_bytes)
+    if dep.get("kind", "quest") == "quest":
+        try:
+            threads = game_threads(pkg, samples=int(args.get("thread_samples", 3)))
+        except OSError:
+            threads = None
+        if threads:
+            files["threads.txt"] = threads
+    shaders = shader_dumps(data_files_dir(base, pkg), int(args.get("shader_bytes", SHADER_DUMP_BYTES)),
+                           int(args.get("shader_session_bytes", SHADER_SESSION_BYTES)))
+    if shaders:
+        out["shaders"] = shaders
     try:
         listing = cmd_list_files({"package": pkg, "limit": 20000})
         out["listing"] = {"missing": listing["missing"], "truncated": listing["truncated"],
@@ -4780,6 +6156,21 @@ def purge_worker(payload):
     try:
         games = cmd_list_installed({})["games"]
         users = steam_users()
+        for d in games:  # SteamVR overlay apps: SteamVR forgets their manifests (while it still runs)
+            if is_overlay(d) or os.path.exists(os.path.join(ANCHORS, d["package"], OVERLAY_MANIFEST)):
+                try:
+                    unregister_overlay(d["package"])
+                    result["removed"].append(f"SteamVR overlay: {d.get('title')}")
+                except Exception as exc:  # noqa: BLE001
+                    result["errors"].append(f"{d.get('title')}: {exc}")
+        try:  # the overlay autostart service runs this agent: it goes before AGENT_HOME does
+            if os.path.exists(VR_OVERLAY_UNIT_PATH):
+                user_systemctl("disable", "--now", VR_OVERLAY_UNIT + ".service")
+                os.remove(VR_OVERLAY_UNIT_PATH)
+                user_systemctl("daemon-reload")
+                result["removed"].append(VR_OVERLAY_UNIT_PATH)
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"overlay autostart service: {exc}")
         try:
             service = stop_steam()
         except AgentError as exc:
@@ -5198,6 +6589,8 @@ MON_INTERVALS = (0.1, 0.25, 0.5, 1, 2, 5)  # seconds between samples; processes 
 MON_DEFAULT_INTERVAL = 0.5
 SCAN_SECONDS = 2.0
 MON_FILTERS = ("game", "steam", "all")
+# what a client can ask for ({"modules": [...]}, agent v73); without that message every module is collected
+MON_MODULES = ("games", "procs", "cpu", "gpu", "mem", "temps", "power", "battery", "net", "disk")
 MON_PROC_LIMIT = 150
 MON_CONTEXT = 3  # "game" filter: the busiest other processes, shown for context
 # processes never signalled: the session, SSH and system plumbing (killing them logs the user out or drops FramePort)
@@ -5211,6 +6604,7 @@ MON_CRITICAL = ("steam", "steamwebhelper", "reaper", "vrserver", "vrcompositor",
 # processes whose command line can name a game (only these are read: cmdlines of ~500 processes cost too much)
 MON_ROOT_COMMS = ("conmon", "launch.sh", "reaper", "bash", "sh")
 MON_ROOT_PREFIXES = ("python", "proton", "pv-", "wine", "steam-runtime")
+AGENT_FILES = {os.path.abspath(__file__), os.path.realpath(__file__)}
 MON_GROUPS = (  # (group, comm prefixes), first match wins; games are found by their process tree
     ("steamvr", ("vr", "XRService", "V4L2Cam", "eyetracking", "proxmicmute", "systemlayer")),
     ("steam", ("steam", "reaper", "fossilize")),
@@ -5240,6 +6634,20 @@ def _num(text, default=None):
         return int(text.strip())
     except (ValueError, AttributeError):
         return default
+
+
+def monitor_plan(modules=None):
+    """The collectors one tick runs for the requested modules (None, "all" or anything unusable = all of them).
+    mem includes PSI, temps the zone detail and the fan. The process scan ("scan") runs for games and procs and also
+    for gpu: GPU busy is summed from the render fds the scan finds; "gpu_ns" (per-process GPU time) for the same."""
+    if modules is None or modules == "all" or not isinstance(modules, (list, tuple, set, frozenset)):
+        wanted = set(MON_MODULES)
+    else:
+        wanted = {m for m in modules if m in MON_MODULES}
+    plan = set(wanted)
+    if wanted & {"games", "procs", "gpu"}:
+        plan |= {"scan", "gpu_ns"}
+    return frozenset(plan)
 
 
 def read_cpu_times():
@@ -5513,6 +6921,7 @@ class Monitor:
         self.page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
         self.btime = next((int(x.split()[1]) for x in _rd(f"{PROC}/stat").splitlines() if x.startswith("btime ")), 0)
         self.filter = "game"
+        self.plan = monitor_plan()  # collectors per tick (set_modules)
         self.kthreads = set()
         self.drm = {}       # pid -> (fds, time of the fd scan)
         self.gpu_ns = {}    # pid -> last drm-engine ns
@@ -5544,7 +6953,15 @@ class Monitor:
                 "clusters": [{"cpus": c["cpus"], "max_mhz": c["max_mhz"]} for c in self.clusters],
                 "mem_total": read_meminfo()["total"], "rails": [r[0] for r in self.rails],
                 "temp_groups": sorted({z[0] for z in self.zones}, key=[g for g, _ in TEMP_GROUPS].index),
-                "fan": bool(self.fan), "intervals": list(MON_INTERVALS), "filters": list(MON_FILTERS)}
+                "fan": bool(self.fan), "intervals": list(MON_INTERVALS), "filters": list(MON_FILTERS),
+                "modules": list(MON_MODULES)}
+
+    def set_modules(self, modules):
+        """Collect only these modules from the next tick on (None/"all" = everything)."""
+        plan = monitor_plan(modules)
+        if ("scan" in plan and "scan" not in self.plan) or ("procs" in plan and "procs" not in self.plan):
+            self.scan_at = -1e9  # processes wanted (again): scan at once
+        self.plan = plan
 
     # -------------------------------------------------------------------- games
     def deployments(self, now):
@@ -5619,7 +7036,9 @@ class Monitor:
                     m = re.search(r"lepton-steamlaunch-(\d+)", cmd)
                     if m and m.group(1) in by_appid:
                         root = (by_appid[m.group(1)]["package"], "container")
-                else:
+                elif not any(a in cmd for a in AGENT_FILES):
+                    # the agent's own workers name a game's launch.sh too (uninstall's shortcut removal while Steam
+                    # restarts): they aren't the game (helpers launch.sh starts still count, as its children)
                     pkg = next((k for path, k in anchors if path in cmd), None) or \
                         next((k for base, k in bases if base in cmd), None)
                     root = (pkg, "launcher") if pkg else None
@@ -5751,52 +7170,72 @@ class Monitor:
         dt = now - self.last if self.last is not None else 0.0
         self.last = now
         out = {"t": round(wall, 3), "dt": round(dt, 3)}
-        cur = read_cpu_times()
-        if self.cpu_prev:
-            pct = cpu_percent(self.cpu_prev, cur)
-            out["cpu"] = {"total": pct[0] if pct else 0.0, "cores": pct[1:]}
+        plan = self.plan
+        if "cpu" in plan:
+            cur = read_cpu_times()
+            if self.cpu_prev:
+                pct = cpu_percent(self.cpu_prev, cur)
+                out["cpu"] = {"total": pct[0] if pct else 0.0, "cores": pct[1:]}
+            else:
+                out["cpu"] = {"total": 0.0, "cores": [0.0] * self.ncpu}
+            self.cpu_prev = cur
+            out["cpu"]["mhz"] = [_num(_rd(f"{c['policy']}/scaling_cur_freq"), 0) // 1000 for c in self.clusters]
         else:
-            out["cpu"] = {"total": 0.0, "cores": [0.0] * self.ncpu}
-        self.cpu_prev = cur
-        out["cpu"]["mhz"] = [_num(_rd(f"{c['policy']}/scaling_cur_freq"), 0) // 1000 for c in self.clusters]
-        out["mem"] = read_meminfo()
-        out["psi"] = read_psi()
-        if now - self.temps_at >= 2 or self.temps is None:  # 48 sensor files (~3 ms at idle clocks); heat is slow
-            self.temps, self.zone_detail = read_temps(self.zones)
-            self.temps_at = now
-        temps, detail = self.temps, self.zone_detail
-        out["temps"] = temps
-        if now - self.zone_detail_at >= 5:
-            out["zones"] = detail
-            self.zone_detail_at = now
-        if self.fan:
-            out["fan"] = _num(_rd(self.fan))
-        out["power"] = self.power.read(now)
-        out["battery"] = self.battery.read(now)
-        net = read_net()
-        if self.net_prev and dt > 0:
-            prev = self.net_prev
-            out["net"] = {k: [max(0, int((v[0] - prev[k][0]) / dt)), max(0, int((v[1] - prev[k][1]) / dt))]
-                          for k, v in net.items() if k in prev}
-        self.net_prev = net
-        if now - self.disk_at >= 30:
+            self.cpu_prev = None  # no average over the time it was off
+        if "mem" in plan:
+            out["mem"] = read_meminfo()
+            out["psi"] = read_psi()
+        if "temps" in plan:
+            if now - self.temps_at >= 2 or self.temps is None:  # 48 sensor files (~3 ms at idle clocks); heat is slow
+                self.temps, self.zone_detail = read_temps(self.zones)
+                self.temps_at = now
+            temps, detail = self.temps, self.zone_detail
+            out["temps"] = temps
+            if now - self.zone_detail_at >= 5:
+                out["zones"] = detail
+                self.zone_detail_at = now
+            if self.fan:
+                out["fan"] = _num(_rd(self.fan))
+        if "power" in plan:
+            out["power"] = self.power.read(now)
+        if "battery" in plan:
+            out["battery"] = self.battery.read(now)
+        if "net" in plan:
+            net = read_net()
+            if self.net_prev and dt > 0:
+                prev = self.net_prev
+                out["net"] = {k: [max(0, int((v[0] - prev[k][0]) / dt)), max(0, int((v[1] - prev[k][1]) / dt))]
+                              for k, v in net.items() if k in prev}
+            self.net_prev = net
+        else:
+            self.net_prev = None  # a delta over one tick's dt needs the previous tick's counters
+        if "disk" in plan and now - self.disk_at >= 30:
             try:
                 st = os.statvfs(HOME)
                 out["disk"] = {"free": st.f_bavail * st.f_frsize, "total": st.f_blocks * st.f_frsize}
             except OSError:
                 pass
             self.disk_at = now
-        scan = now - self.scan_at >= SCAN_SECONDS or not self.procs
+        scan = "scan" in plan and (now - self.scan_at >= SCAN_SECONDS or not self.procs)
         if scan:
             self.scan(now, wall)
             self.scan_at = now
-        busy = self.gpu_sample(now, dt)
-        out["gpu"] = {"busy": round(busy, 1) if dt > 0 else None,
-                      "mhz": _num(_rd(f"{self.gpu}/cur_freq"), 0) // 1000000 if self.gpu else None}
-        out["games"] = self.games_sample(now)
-        if scan:
+        if "gpu_ns" in plan:
+            busy = self.gpu_sample(now, dt)
+        else:
+            busy = None
+            self.gpu_ns, self.gpu_pct, self.gpu_acc = {}, {}, {}  # stale counters would spike on the next delta
+        if "gpu" in plan:
+            out["gpu"] = {"busy": round(busy, 1) if dt > 0 and busy is not None else None,
+                          "mhz": _num(_rd(f"{self.gpu}/cur_freq"), 0) // 1000000 if self.gpu else None}
+        if "games" in plan:
+            out["games"] = self.games_sample(now)
+        if scan and "procs" in plan:
             out["procs"] = self.filtered(now)
             out["filter"] = self.filter
+            self.scan_prev = now
+        elif scan:
+            self.gpu_acc = {}
             self.scan_prev = now
         self.tick += 1
         out["self_ms"] = round((time.process_time() - t0) * 1000, 2)
@@ -5884,9 +7323,10 @@ def monitor_end_game(pkg, wait=6.0):
 
 def monitor_session(stdin, stdout, monitor=None, sleep=time.sleep, max_ticks=None):
     """Long-lived: prints {"ready": 1, "static": {...}}, then one sample per tick. Control lines on stdin:
-    {"interval": 1|2|5}, {"procs": "game"|"steam"|"all"}, {"pause": bool}, {"id": n, "kill": pid, "sig": "TERM"|
-    "KILL", "force": bool}, {"id": n, "end_game": package} (each with an id gets {"reply": n, "ok": …}). Ends at EOF
-    or when the SSH session (parent) is gone."""
+    {"interval": 1|2|5}, {"procs": "game"|"steam"|"all"}, {"pause": bool}, {"modules": [...]|"all"} (v73: only those
+    collectors run, see monitor_plan), {"id": n, "kill": pid, "sig": "TERM"|"KILL", "force": bool}, {"id": n,
+    "end_game": package} (each with an id gets {"reply": n, "ok": …}). Ends at EOF or when the SSH session (parent)
+    is gone."""
     import threading
 
     mon = monitor or Monitor()
@@ -5928,6 +7368,8 @@ def monitor_session(stdin, stdout, monitor=None, sleep=time.sleep, max_ticks=Non
                     mon.scan_at = -1e9  # rescan now
                 if "pause" in msg:
                     state["pause"] = bool(msg["pause"])
+                if "modules" in msg and hasattr(mon, "set_modules"):
+                    mon.set_modules(msg["modules"])
                 if "kill" in msg or "end_game" in msg:
                     threading.Thread(target=act, args=(msg,), daemon=True).start()
                     continue
@@ -5966,6 +7408,12 @@ COMMANDS = {n[4:]: f for n, f in globals().items() if n.startswith("cmd_")}
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "_keyboard":
         return keyboard_session(sys.stdin, sys.stdout)
+    if len(sys.argv) >= 2 and sys.argv[1] == "_vr_overlay_watch":
+        vr_overlay_watch()
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == "_vr_overlay_round":
+        print(json.dumps(overlay_autostart_round()), flush=True)
+        return
     if len(sys.argv) >= 2 and sys.argv[1] == "_monitor":
         return monitor_session(sys.stdin, sys.stdout)
     if len(sys.argv) >= 3 and sys.argv[1] == "_shortcuts_worker":
@@ -5985,6 +7433,9 @@ def main():
         return 0
     if len(sys.argv) >= 4 and sys.argv[1] == "_dashboard_worker":
         dashboard_worker(sys.argv[2], sys.argv[3])
+        return 0
+    if len(sys.argv) >= 3 and sys.argv[1] == "_config_sync":
+        config_sync_worker(sys.argv[2])
         return 0
     if len(sys.argv) >= 3 and sys.argv[1] == "_tools_worker":
         tools_worker(sys.argv[2])

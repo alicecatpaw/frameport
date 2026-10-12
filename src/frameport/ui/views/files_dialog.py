@@ -34,10 +34,10 @@ def folder_note(path: str) -> str:
     """What a well-known entry of an install is (shown next to it, in plain words)."""
     notes = {
         "lepton-app": tr("the installed game (APK and its data)"),
-        "lepton-data": tr("saves and settings (the app's Android storage)"),
-        "lepton-shaders": tr("shader cache: makes later starts load faster; rebuilt if deleted"),
+        "lepton-data": tr("saves and settings"),
+        "lepton-shaders": tr("shader cache: faster starts; rebuilt if deleted"),
         "artwork": tr("pictures for the Steam library"),
-        "previous-game.apk": tr("the previous version, kept for one rollback"),
+        "previous-game.apk": tr("the previous version, kept as a backup"),
         "launch.log": tr("the log of the last start"),
     }
     return notes.get(path, "")
@@ -96,14 +96,11 @@ def human(n: int) -> str:
 
 def show_files_dialog(app: FramePortApp, package: str, title: str) -> None:
     status = C.meta(tr("Reading the file list from the Frame…"))
-    ring = ft.ProgressRing(width=T.px(16), height=T.px(16), stroke_width=T.px(2), color=T.ACCENT)
+    ring = C.spinner()
     body = ft.Column([ft.Row([ring, status],
                              spacing=T.S2)], spacing=T.S3, expand=True)
-    dialog = ft.AlertDialog(
-        title=ft.Text(tr("Files on the Frame — {title}").format(title=title), weight=ft.FontWeight.W_600),
-        content=ft.Container(body, width=T.px(760), height=T.px(560)),
-        bgcolor=T.SURFACE_2, shape=ft.RoundedRectangleBorder(radius=T.RADIUS),
-        actions=[C.ghost(tr("Close"), on_click=lambda e: app.page.pop_dialog())])
+    dialog = C.dialog(tr("Files on the Frame — {title}").format(title=title), body,
+                      [C.ghost(tr("Close"), on_click=lambda e: app.page.pop_dialog())], size="l", height=T.px(560))
     app.page.show_dialog(dialog)
 
     def load():
@@ -113,19 +110,15 @@ def show_files_dialog(app: FramePortApp, package: str, title: str) -> None:
         trees = [(r, build_tree(r["name"], r["files"])) for r in result["roots"]]
         expanded: set[str] = set()
         rows = ft.ListView(spacing=0, expand=True)
-        search = ft.TextField(hint_text=tr("Filter files (e.g. .pak, Binaries)"), dense=True, expand=True,
-                              border_radius=T.RADIUS_SM, bgcolor=T.SURFACE_3, border_color=ft.Colors.TRANSPARENT,
-                              focused_border_color=T.ACCENT,
-                              content_padding=ft.Padding(T.px(12), T.px(8), T.px(12), T.px(8)),
-                              text_size=T.T_BODY, prefix_icon=ft.Icons.SEARCH_ROUNDED)
+        search = C.search(hint_text=tr("Filter files (for example .pak, Binaries)"), expand=True)
 
         def row(depth: int, node: Node | int, root_key: str) -> ft.Control:
-            pad = ft.Padding(8 + depth * 18, T.px(3), T.px(8), T.px(3))
+            pad = ft.Padding(T.px(8 + depth * 18), T.px(3), T.px(8), T.px(3))
             if isinstance(node, int):
                 return ft.Container(C.meta(tr("… {node} more (use the filter to find them)").format(node=node)),
                                     padding=pad)
             key = f"{root_key}\0{node.path}"
-            icon = (ft.Icons.FOLDER_OPEN_ROUNDED if key in expanded else ft.Icons.FOLDER_ROUNDED) if node.is_dir \
+            icon = (ft.Icons.FOLDER_OPEN_ROUNDED if key in expanded else ft.Icons.FOLDER_OUTLINED) if node.is_dir \
                 else ft.Icons.INSERT_DRIVE_FILE_OUTLINED
             chevron = ft.Icon(ft.Icons.EXPAND_MORE_ROUNDED if key in expanded else ft.Icons.CHEVRON_RIGHT_ROUNDED,
                               size=T.px(16), color=T.TEXT_3) if node.is_dir else ft.Container(width=T.px(16))
@@ -138,7 +131,7 @@ def show_files_dialog(app: FramePortApp, package: str, title: str) -> None:
                 ft.Container(C.meta(note, T.TEXT_3, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS),
                              tooltip=note or None, expand=True),
                 C.meta(info),
-            ], spacing=T.px(6)), padding=pad, border_radius=T.px(6), ink=node.is_dir,
+            ], spacing=T.px(6)), padding=pad, border_radius=T.RADIUS_XS, ink=node.is_dir,
                 on_click=(lambda e, k=key: toggle(k)) if node.is_dir else None)
 
         def render():
@@ -184,10 +177,10 @@ def show_files_dialog(app: FramePortApp, package: str, title: str) -> None:
             lines = "\n".join(f"{rel}: " + ("missing" if actual is None else f"{human(actual)} of {human(size)}")
                               for rel, size, actual in missing[:8])
             more = tr_n("\n… and {n} more", "\n… and {n} more", len(missing) - 8) if len(missing) > 8 else ""
-            head.append(C.callout(tr_n("{n} file is missing or incomplete compared to what was uploaded. "
-                                       "Install the game again to re-send it.\n{lines}{more}",
-                                       "{n} files are missing or incomplete compared to what was uploaded. "
-                                       "Install the game again to re-send them.\n{lines}{more}",
+            head.append(C.callout(tr_n("{n} file is missing or incomplete. Install the game again to send it "
+                                       "again.\n{lines}{more}",
+                                       "{n} files are missing or incomplete. Install the game again to send them "
+                                       "again.\n{lines}{more}",
                                        len(missing), lines=lines, more=more), "warn"))
         elif result.get("kind") == "pcvr":
             head.append(C.callout(tr("Every uploaded file is present with the right size."), "ok"))

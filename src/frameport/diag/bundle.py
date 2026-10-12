@@ -2,10 +2,12 @@
 Frame or this app (see docs/DIAGNOSTICS.md for the layout). Users attach it to a GitHub issue."""
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import json
 import platform
+import re
 import sys
 import time
 import zipfile
@@ -41,6 +43,9 @@ Created by FramePort {version} on {created}. Personal data was replaced by place
 | games/<pkg>/logs/ | launch-test logs saved on the PC |
 | games/<pkg>/target/ | from the Frame (or PC): launch.sh, settings.conf, deployment.json, launch/logcat/Proton/game"""
 """ logs, file list |
+| games/<pkg>/target/shaders/<dir>/ | shader dumps (vk_shader_dump: fp_vk_shaders, zink_shader_dump: fp_spirv): the"""
+""" SPIR-V modules of the newest run, else the newest written (binary, not redacted: compiled game shaders) and"""
+""" index.txt (creation order and time) |
 
 ## Debugging from this bundle
 1. `frameport diag inspect <this zip>` re-runs triage with the current signatures (catalog/triage.yaml).
@@ -100,7 +105,17 @@ class _Writer:
             logs = sorted((n for n in self.files if n.endswith((".log", ".txt")) and len(self.files[n]) > 64 << 10),
                           key=lambda n: -len(self.files[n]))
             if not logs:
-                break
+                # then shader modules (agent >= 74 sends up to 30 MB): the least recently used first (the agent
+                # lists them last used first)
+                spv = [n for n in self.files if n.endswith(".spv")]
+                if not spv:
+                    break
+                drop = spv[-max(1, len(spv) // 8):]
+                for n in drop:
+                    del self.files[n]
+                self.warnings.append(f"{len(drop)} shader module(s) left out to fit the size limit")
+                size = zipped()
+                continue
             n = logs[0]
             tail = self.files[n][-(len(self.files[n]) // 4):]
             self.files[n] = b"[... cut to fit the 25 MB attachment limit ...]\n" + tail
@@ -109,6 +124,33 @@ class _Writer:
 
 
 # ------------------------------------------------------------------------------------------ pieces
+def add_shader_dumps(w: _Writer, prefix: str, shaders: dict) -> None:
+    """The agent's shader dumps (collect_diag "shaders", agent >= 72): SPIR-V modules as they are (compiled game
+    shaders, nothing personal), the index as redacted text."""
+    for folder, res in shaders.items():
+        if not isinstance(res, dict) or folder not in ("fp_vk_shaders", "fp_spirv"):
+            continue
+        base = f"{prefix}{folder}/"
+        if res.get("index"):
+            w.text(base + "index.txt", res["index"])
+        modules = res.get("modules") or {}
+        for name, b64 in modules.items():
+            if not re.fullmatch(r"\d+_[0-9a-f]{64}\.spv", name):
+                continue
+            try:
+                w.files[base + name] = base64.b64decode(b64, validate=True)
+            except (ValueError, TypeError):
+                w.warnings.append(f"{base}{name}: not base64")
+        if "session" in res:  # agent >= 74: the newest session's modules (index.txt), not the newest written
+            left = int(res.get("session") or 0) - len(modules)
+            if left > 0:
+                w.warnings.append(f"{base}: {left} module(s) of the newest session stayed on the Frame (size limit)")
+            continue
+        left = int(res.get("total") or 0) - len(modules)
+        if left > 0:
+            w.warnings.append(f"{base}: {left} older module(s) stayed on the Frame (size limit)")
+
+
 def env_info(target_info: dict | None = None) -> dict:
     """Versions and platform facts (manifest.json and the "environment" of GitHub issues)."""
     from ..frame.connection import bundled_agent_version
@@ -304,6 +346,7 @@ def _game(w: _Writer, g: dict, target, reporter: Reporter) -> dict:
             w.text(d + "target/" + name.replace("/", "_"), text or "")
         if remote.get("listing"):
             w.json(d + "target/files.json", remote["listing"])
+        add_shader_dumps(w, d + "target/shaders/", remote.get("shaders") or {})
         if not remote.get("installed", True):
             w.warnings.append(f"{pkg}: not installed on {target.label}")
     return {"package": pkg, "title": g.get("title"), "kind": g.get("kind", "quest"), "status": g.get("status"),

@@ -19,9 +19,7 @@ if TYPE_CHECKING:
 
 def show_art_dialog(app: FramePortApp, package: str) -> None:
     g = library.game(package)
-    term = ft.TextField(value=g.get("title") or package, dense=True, expand=True, border_radius=T.RADIUS_SM,
-                        bgcolor=T.SURFACE_3, border_color=ft.Colors.TRANSPARENT, focused_border_color=T.ACCENT,
-                        content_padding=ft.Padding(T.px(12), T.px(8), T.px(12), T.px(8)), text_size=T.T_BODY)
+    term = C.search(value=g.get("title") or package, expand=True)
     results = ft.GridView(max_extent=T.px(190), child_aspect_ratio=0.8, spacing=T.S3, run_spacing=T.S3,
                           height=T.px(400))
     status = C.meta("")
@@ -31,8 +29,8 @@ def show_art_dialog(app: FramePortApp, package: str) -> None:
 
         def work():
             if not sources.apply_choice(package, choice):
-                app.toast(tr("No artwork could be downloaded from that {source} result; the current artwork stays. "
-                             "Try another one.").format(source=choice['source']), error=True)
+                app.toast(tr("Couldn't download artwork from that {source} result. Try another one.")
+                          .format(source=choice['source']), error=True)
                 return
             thumbs.prewarm(package)
             installed = C.install_state(library.game(package), app.frame_info) in ("installed", "outdated")
@@ -43,7 +41,7 @@ def show_art_dialog(app: FramePortApp, package: str) -> None:
             if installed:
                 app.toast(tr("Artwork updated for {get}. The Frame's Steam library still shows the old art.")
                           .format(get=g.get('title')),
-                          action=tr("Update on Frame"), on_action=lambda e: app.update_steam_art(package))
+                          action=tr("Update art on Frame"), on_action=lambda e: app.update_steam_art(package))
             else:
                 app.toast(tr("Artwork updated for {get}").format(get=g.get('title')))
         app.run_bg(work)
@@ -56,7 +54,7 @@ def show_art_dialog(app: FramePortApp, package: str) -> None:
         def work():
             found = sources.search(term.value.strip())
             results.controls = [ft.Container(ft.Column([
-                ft.Container(C.art_fill(r["preview"], radius=T.px(8), height=T.px(120)), height=T.px(120)),
+                ft.Container(C.art_fill(r["preview"], radius=T.RADIUS_SM, height=T.px(120)), height=T.px(120)),
                 C.body(r["name"] or "", T.TEXT, size=T.T_META, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                 C.meta(r["source"]),
             ], spacing=T.px(4)), padding=T.S2, border_radius=T.RADIUS_SM, bgcolor=T.SURFACE, ink=True,
@@ -80,20 +78,19 @@ def show_art_dialog(app: FramePortApp, package: str) -> None:
             if src and src != "none" and installed:
                 app.toast(tr("Artwork updated ({src}). The Frame's Steam library still shows the old art.")
                           .format(src=src),
-                          action=tr("Update on Frame"), on_action=lambda e: app.update_steam_art(package))
+                          action=tr("Update art on Frame"), on_action=lambda e: app.update_steam_art(package))
             else:
                 app.toast(tr("Artwork: {value}").format(value=src or 'none found'))
         app.run_bg(work)
 
     term.on_submit = search
-    app.page.show_dialog(ft.AlertDialog(
-        title=ft.Text(tr("Artwork for {get}").format(get=g.get('title')), weight=ft.FontWeight.W_600),
-        content=ft.Container(ft.Column([
+    app.page.show_dialog(C.dialog(
+        tr("Artwork for {get}").format(get=g.get('title')),
+        ft.Column([
             ft.Row([term, C.secondary(tr("Search"), ft.Icons.SEARCH_ROUNDED, search)], spacing=T.S2),
             status, results,
-        ], spacing=T.S3, tight=True), width=T.px(660)),
-        bgcolor=T.SURFACE_2, shape=ft.RoundedRectangleBorder(radius=T.RADIUS),
-        actions=[C.ghost(tr("Use your own images…"), ft.Icons.UPLOAD_FILE_ROUNDED,
+        ], spacing=T.S3, tight=True),
+        actions=[C.ghost(tr("Use your own artwork…"), ft.Icons.UPLOAD_FILE_OUTLINED,
                          lambda e: (app.page.pop_dialog(), show_custom_art_dialog(app, package))),
                  C.ghost(tr("Find automatically"), ft.Icons.AUTO_AWESOME_ROUNDED, auto),
                  C.ghost(tr("Close"), on_click=lambda e: app.page.pop_dialog())]))
@@ -125,7 +122,7 @@ def show_custom_art_dialog(app: FramePortApp, package: str) -> None:
         app.refresh_view()
         if installed:
             app.toast(tr("{message} The Frame's Steam library still shows the old art.").format(message=message),
-                      action=tr("Update on Frame"), on_action=lambda e: app.update_steam_art(package))
+                      action=tr("Update art on Frame"), on_action=lambda e: app.update_steam_art(package))
         else:
             app.toast(message)
 
@@ -155,16 +152,16 @@ def show_custom_art_dialog(app: FramePortApp, package: str) -> None:
         art = thumbs.url(package, (kind,), 400)
         if art and kind in ("logo", "icon"):  # shown whole (a logo is often very wide, an icon small)
             box = ft.Container(ft.Image(src=art, fit=ft.BoxFit.CONTAIN), height=T.px(110), padding=T.S2,
-                               border_radius=T.px(8), bgcolor=T.SURFACE_3, alignment=ft.Alignment.CENTER)
+                               border_radius=T.RADIUS_SM, bgcolor=T.SURFACE_3, alignment=ft.Alignment.CENTER)
         else:
-            box = (C.art_fill(art, radius=T.px(8), height=T.px(110)) if art else
+            box = (C.art_fill(art, radius=T.RADIUS_SM, height=T.px(110)) if art else
                    ft.Container(C.meta(tr("None")), height=T.px(110), alignment=ft.Alignment.CENTER,
-                                border_radius=T.px(8), bgcolor=T.SURFACE_3))
-        buttons = [C.ghost(tr("Choose…"), ft.Icons.UPLOAD_FILE_ROUNDED,
+                                border_radius=T.RADIUS_SM, bgcolor=T.SURFACE_3))
+        buttons = [C.ghost(tr("Choose…"), ft.Icons.UPLOAD_FILE_OUTLINED,
                            lambda e, k=kind, lb=label: app.page.run_task(choose, k, lb))]
         if art:
-            buttons.append(ft.IconButton(ft.Icons.DELETE_OUTLINE_ROUNDED, icon_size=T.px(18), icon_color=T.TEXT_3,
-                                         tooltip=tr("Remove"), on_click=lambda e, k=kind, lb=label: remove(k, lb)))
+            buttons.append(C.icon_btn(ft.Icons.DELETE_OUTLINE_ROUNDED, tr("Remove"),
+                                      lambda e, k=kind, lb=label: remove(k, lb), color=T.TEXT_3))
         return ft.Container(ft.Column([
             box,
             C.body(label, T.TEXT, size=T.T_META, weight=ft.FontWeight.W_600),
@@ -178,14 +175,13 @@ def show_custom_art_dialog(app: FramePortApp, package: str) -> None:
         C.update(grid)
 
     grid.controls = [slot(*s) for s in custom_slots()]
-    app.page.show_dialog(ft.AlertDialog(
-        title=ft.Text(tr("Your own artwork for {title}").format(title=g.get("title")), weight=ft.FontWeight.W_600),
-        content=ft.Container(ft.Column([
-            C.body(tr("Choose PNG, JPEG or WebP images. Steam fills any missing shape from the ones you choose; "
-                      "FramePort never replaces your images automatically.")),
+    app.page.show_dialog(C.dialog(
+        tr("Your own artwork for {title}").format(title=g.get("title")),
+        ft.Column([
+            C.body(tr("Choose PNG, JPEG or WebP images. Missing shapes are made from the ones you choose, and "
+                      "FramePort never replaces them.")),
             grid,
-        ], spacing=T.S3, tight=True), width=T.px(660)),
-        bgcolor=T.SURFACE_2, shape=ft.RoundedRectangleBorder(radius=T.RADIUS),
+        ], spacing=T.S3, tight=True),
         actions=[C.ghost(tr("Search the stores instead"), ft.Icons.IMAGE_SEARCH_ROUNDED,
                          lambda e: (app.page.pop_dialog(), show_art_dialog(app, package))),
                  C.ghost(tr("Close"), on_click=lambda e: app.page.pop_dialog())]))

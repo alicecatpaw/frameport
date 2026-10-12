@@ -1,0 +1,782 @@
+{
+ "adapter.aim_forward": {
+  "anchor": "adapter-aim_forward",
+  "title": "Pointer start",
+  "group": "Game settings"
+ },
+ "adapter.aim_pitch": {
+  "anchor": "adapter-aim_pitch",
+  "title": "Pointer angle",
+  "group": "Game settings"
+ },
+ "adapter.aim_yaw": {
+  "anchor": "adapter-aim_yaw",
+  "title": "Pointer turn",
+  "group": "Game settings"
+ },
+ "adapter.controller_fix": {
+  "anchor": "adapter-controller_fix",
+  "title": "Use controllers",
+  "group": "Game settings"
+ },
+ "adapter.controller_models": {
+  "anchor": "adapter-controller_models",
+  "title": "Show Steam Frame controllers",
+  "group": "Game settings"
+ },
+ "adapter.cube_standin": {
+  "anchor": "adapter-cube_standin",
+  "title": "Stand in for cube layers",
+  "group": "Game settings"
+ },
+ "adapter.cylinder_strips": {
+  "anchor": "adapter-cylinder_strips",
+  "title": "Show curved menus and screens",
+  "group": "Game settings"
+ },
+ "adapter.equirect_emul": {
+  "anchor": "adapter-equirect_emul",
+  "title": "Show 360° backgrounds and videos",
+  "group": "Game settings"
+ },
+ "adapter.equirect_face": {
+  "anchor": "adapter-equirect_face",
+  "title": "360° detail",
+  "group": "Game settings"
+ },
+ "adapter.equirect_flip": {
+  "anchor": "adapter-equirect_flip",
+  "title": "360° picture orientation",
+  "group": "Game settings"
+ },
+ "adapter.equirect_fps": {
+  "anchor": "adapter-equirect_fps",
+  "title": "360° video frame rate limit",
+  "group": "Game settings"
+ },
+ "adapter.equirect_res": {
+  "anchor": "adapter-equirect_res",
+  "title": "360° sharpness",
+  "group": "Game settings"
+ },
+ "adapter.equirect_stereo": {
+  "anchor": "adapter-equirect_stereo",
+  "title": "360° 3D",
+  "group": "Game settings"
+ },
+ "adapter.eye_debug": {
+  "anchor": "adapter-eye_debug",
+  "title": "Per-eye diagnostics (log)",
+  "group": "Game settings"
+ },
+ "adapter.flip_emul": {
+  "anchor": "adapter-flip_emul",
+  "title": "Fix upside-down menus",
+  "group": "Game settings"
+ },
+ "adapter.flip_quads": {
+  "anchor": "adapter-flip_quads",
+  "title": "Rotate panels 180°",
+  "group": "Game settings"
+ },
+ "adapter.focus_hold": {
+  "anchor": "adapter-focus_hold",
+  "title": "Don't pause on short interruptions",
+  "group": "Game settings"
+ },
+ "adapter.focus_hold_ms": {
+  "anchor": "adapter-focus_hold_ms",
+  "title": "Ignore focus dips up to",
+  "group": "Game settings"
+ },
+ "adapter.foveation_fix": {
+  "anchor": "adapter-foveation_fix",
+  "title": "Hide Quest foveation",
+  "group": "Game settings"
+ },
+ "adapter.gl_hide_msrtt": {
+  "anchor": "adapter-gl_hide_msrtt",
+  "title": "Hide fast anti-aliasing (OpenGL ES)",
+  "group": "Game settings"
+ },
+ "adapter.gl_hide_multiview": {
+  "anchor": "adapter-gl_hide_multiview",
+  "title": "Draw each eye separately (OpenGL ES)",
+  "group": "Game settings"
+ },
+ "adapter.gl_highp_markers": {
+  "anchor": "adapter-gl_highp_markers",
+  "title": "GL shim: high-precision vertex shaders",
+  "group": "Game settings"
+ },
+ "adapter.gl_int_attribs": {
+  "anchor": "adapter-gl_int_attribs",
+  "title": "GL shim: integer vertex inputs",
+  "group": "Game settings"
+ },
+ "adapter.gl_mv_debug": {
+  "anchor": "adapter-gl_mv_debug",
+  "title": "Flat panel diagnostics (log)",
+  "group": "Game settings"
+ },
+ "adapter.haptic_fix": {
+  "anchor": "adapter-haptic_fix",
+  "title": "Fix freezes when controllers vibrate",
+  "group": "Game settings"
+ },
+ "adapter.haptic_scale": {
+  "anchor": "adapter-haptic_scale",
+  "title": "Vibration strength",
+  "group": "Game settings"
+ },
+ "adapter.hide_space_warp": {
+  "anchor": "adapter-hide_space_warp",
+  "title": "Turn off space warp",
+  "group": "Game settings"
+ },
+ "adapter.input_diag": {
+  "anchor": "adapter-input_diag",
+  "title": "Controller input diagnostics (log)",
+  "group": "Game settings"
+ },
+ "adapter.layer_debug": {
+  "anchor": "adapter-layer_debug",
+  "title": "Extra diagnostics (log)",
+  "group": "Game settings"
+ },
+ "adapter.layer_fix": {
+  "anchor": "adapter-layer_fix",
+  "title": "Drop broken layers",
+  "group": "Game settings"
+ },
+ "adapter.mutable_fix": {
+  "anchor": "adapter-mutable_fix",
+  "title": "Vulkan format workaround",
+  "group": "Game settings"
+ },
+ "adapter.ovrp_begin_gate": {
+  "anchor": "adapter-ovrp_begin_gate",
+  "title": "Unity frame loop: wait for skipped frames",
+  "group": "Game settings"
+ },
+ "adapter.ovrp_hold_physics": {
+  "anchor": "adapter-ovrp_hold_physics",
+  "title": "Steadier hands (older Unity)",
+  "group": "Game settings"
+ },
+ "adapter.passthrough_emul": {
+  "anchor": "adapter-passthrough_emul",
+  "title": "See your room",
+  "group": "Game settings"
+ },
+ "adapter.pose_consistency": {
+  "anchor": "adapter-pose_consistency",
+  "title": "Steadier head tracking",
+  "group": "Game settings"
+ },
+ "adapter.pose_debug": {
+  "anchor": "adapter-pose_debug",
+  "title": "Pose timing diagnostics (log)",
+  "group": "Game settings"
+ },
+ "adapter.pose_time_fix": {
+  "anchor": "adapter-pose_time_fix",
+  "title": "Fix hands lagging behind controllers",
+  "group": "Game settings"
+ },
+ "adapter.profile_remap": {
+  "anchor": "adapter-profile_remap",
+  "title": "Treat newer Quest controllers as Touch",
+  "group": "Game settings"
+ },
+ "adapter.proximity_emul": {
+  "anchor": "adapter-proximity_emul",
+  "title": "Animate fingers from touch",
+  "group": "Game settings"
+ },
+ "adapter.rect_clamp": {
+  "anchor": "adapter-rect_clamp",
+  "title": "Keep pictures in bounds",
+  "group": "Game settings"
+ },
+ "adapter.refresh_rate": {
+  "anchor": "adapter-refresh_rate",
+  "title": "Refresh rate",
+  "group": "Game settings"
+ },
+ "adapter.release_wait": {
+  "anchor": "adapter-release_wait",
+  "title": "Wait for the game's GPU",
+  "group": "Game settings"
+ },
+ "adapter.respace_kick": {
+  "anchor": "adapter-respace_kick",
+  "title": "Re-create play space",
+  "group": "Game settings"
+ },
+ "adapter.scale": {
+  "anchor": "adapter-scale",
+  "title": "Sharpness",
+  "group": "Game settings"
+ },
+ "adapter.scene_depth": {
+  "anchor": "adapter-scene_depth",
+  "title": "Room depth",
+  "group": "Game settings"
+ },
+ "adapter.scene_emul": {
+  "anchor": "adapter-scene_emul",
+  "title": "Pretend room layout",
+  "group": "Game settings"
+ },
+ "adapter.scene_height": {
+  "anchor": "adapter-scene_height",
+  "title": "Room height",
+  "group": "Game settings"
+ },
+ "adapter.scene_width": {
+  "anchor": "adapter-scene_width",
+  "title": "Room width",
+  "group": "Game settings"
+ },
+ "adapter.snapshot": {
+  "anchor": "adapter-snapshot",
+  "title": "Eye-image snapshots (diagnostics)",
+  "group": "Game settings"
+ },
+ "adapter.stable_local": {
+  "anchor": "adapter-stable_local",
+  "title": "Keep menus in place",
+  "group": "Game settings"
+ },
+ "adapter.strip_color_bias": {
+  "anchor": "adapter-strip_color_bias",
+  "title": "Drop layer color fades",
+  "group": "Game settings"
+ },
+ "adapter.strip_depth": {
+  "anchor": "adapter-strip_depth",
+  "title": "Strip depth layers",
+  "group": "Game settings"
+ },
+ "adapter.surface_emul": {
+  "anchor": "adapter-surface_emul",
+  "title": "Show video panels",
+  "group": "Game settings"
+ },
+ "adapter.surface_native": {
+  "anchor": "adapter-surface_native",
+  "title": "Native video surfaces (Batman renderer)",
+  "group": "Game settings"
+ },
+ "adapter.swap_eyes": {
+  "anchor": "adapter-swap_eyes",
+  "title": "Swap eyes",
+  "group": "Game settings"
+ },
+ "adapter.swapchain_fix": {
+  "anchor": "adapter-swapchain_fix",
+  "title": "Retry refused picture formats",
+  "group": "Game settings"
+ },
+ "adapter.sync_guard": {
+  "anchor": "adapter-sync_guard",
+  "title": "Steady controller input after focus",
+  "group": "Game settings"
+ },
+ "adapter.vk_hide_fdm": {
+  "anchor": "adapter-vk_hide_fdm",
+  "title": "Hide Vulkan foveation",
+  "group": "Game settings"
+ },
+ "adapter.vk_query_slots": {
+  "anchor": "adapter-vk_query_slots",
+  "title": "Stop objects popping in and out",
+  "group": "Game settings"
+ },
+ "adapter.vk_shader_dump": {
+  "anchor": "adapter-vk_shader_dump",
+  "title": "Vulkan shader dump (diagnostics)",
+  "group": "Game settings"
+ },
+ "adapter.vk_shader_fix": {
+  "anchor": "adapter-vk_shader_fix",
+  "title": "Vulkan shader fixes",
+  "group": "Game settings"
+ },
+ "adapter.vk_spec_fixes": {
+  "anchor": "adapter-vk_spec_fixes",
+  "title": "Fix depth flicker (Unreal Vulkan)",
+  "group": "Game settings"
+ },
+ "adapter.vk_validation": {
+  "anchor": "adapter-vk_validation",
+  "title": "Vulkan error checks (log)",
+  "group": "Game settings"
+ },
+ "adapter.zink_shader_dump": {
+  "anchor": "adapter-zink_shader_dump",
+  "title": "OpenGL ES shader dump (diagnostics)",
+  "group": "Game settings"
+ },
+ "adapter.zink_shader_fix": {
+  "anchor": "adapter-zink_shader_fix",
+  "title": "OpenGL ES shader fixes",
+  "group": "Game settings"
+ },
+ "device.config_sync": {
+  "anchor": "device-config_sync",
+  "title": "Keep the game's saved resolution in step",
+  "group": "Files and settings on the Frame"
+ },
+ "device.display_mode": {
+  "anchor": "device-display_mode",
+  "title": "Show as VR or as a flat window",
+  "group": "Files and settings on the Frame"
+ },
+ "device.files": {
+  "anchor": "device-files",
+  "title": "Settings files for the game",
+  "group": "Files and settings on the Frame"
+ },
+ "device.foveation": {
+  "anchor": "device-foveation",
+  "title": "Eye-tracked foveation (Valve)",
+  "group": "Files and settings on the Frame"
+ },
+ "device.hide_navbar": {
+  "anchor": "device-hide_navbar",
+  "title": "Hide Android's navigation bar",
+  "group": "Files and settings on the Frame"
+ },
+ "device.lepton_env": {
+  "anchor": "device-lepton_env",
+  "title": "Extra Lepton settings",
+  "group": "Files and settings on the Frame"
+ },
+ "device.steam_gamepad": {
+  "anchor": "device-steam_gamepad",
+  "title": "Controllers as a gamepad (Steam Input)",
+  "group": "Files and settings on the Frame"
+ },
+ "device.text_input_window": {
+  "anchor": "device-text_input_window",
+  "title": "Show the app's Android window (for typing)",
+  "group": "Files and settings on the Frame"
+ },
+ "frame.adapter": {
+  "anchor": "frame-adapter",
+  "title": "FrameBridge OpenXR adapter",
+  "group": "Steam Frame patches"
+ },
+ "frame.asset_files": {
+  "anchor": "frame-asset_files",
+  "title": "Content files from the game's data",
+  "group": "Steam Frame patches"
+ },
+ "frame.avatar_stub": {
+  "anchor": "frame-avatar_stub",
+  "title": "Skip Meta avatars",
+  "group": "Steam Frame patches"
+ },
+ "frame.blazerush": {
+  "anchor": "frame-blazerush",
+  "title": "BlazeRush: controllers without Meta avatars, own shader cache",
+  "group": "Steam Frame patches"
+ },
+ "frame.gl_multiview_fbo": {
+  "anchor": "frame-gl_multiview_fbo",
+  "title": "OpenGL ES: multiview shaders on flat panels (HUD, menus)",
+  "group": "Steam Frame patches"
+ },
+ "frame.gl_shim": {
+  "anchor": "frame-gl_shim",
+  "title": "GL shim (Mesa GLSL compatibility)",
+  "group": "Steam Frame patches"
+ },
+ "frame.godot_clipboard": {
+  "anchor": "frame-godot_clipboard",
+  "title": "Godot apps: start without a clipboard service",
+  "group": "Steam Frame patches"
+ },
+ "frame.hw_video_decode": {
+  "anchor": "frame-hw_video_decode",
+  "title": "Hardware video decoding (H.264, HEVC, VP9)",
+  "group": "Steam Frame patches"
+ },
+ "frame.langpacks": {
+  "anchor": "frame-langpacks",
+  "title": "Language packs from the game's files",
+  "group": "Steam Frame patches"
+ },
+ "frame.launcher": {
+  "anchor": "frame-launcher",
+  "title": "Launcher category (INFO → LAUNCHER)",
+  "group": "Steam Frame patches"
+ },
+ "frame.ltw_depth": {
+  "anchor": "frame-ltw_depth",
+  "title": "GL wrapper: OpenGL ES depth formats (Minecraft)",
+  "group": "Steam Frame patches"
+ },
+ "frame.meta_permissions": {
+  "anchor": "frame-meta_permissions",
+  "title": "Declare Meta-only permissions",
+  "group": "Steam Frame patches"
+ },
+ "frame.metaxr_telemetry": {
+  "anchor": "frame-metaxr_telemetry",
+  "title": "Meta XR Audio: skip Quest telemetry class",
+  "group": "Steam Frame patches"
+ },
+ "frame.nodebug": {
+  "anchor": "frame-nodebug",
+  "title": "Clear android:debuggable",
+  "group": "Steam Frame patches"
+ },
+ "frame.oculusos": {
+  "anchor": "frame-oculusos",
+  "title": "Oculus OS telemetry class stubs",
+  "group": "Steam Frame patches"
+ },
+ "frame.ovr_microphone": {
+  "anchor": "frame-ovr_microphone",
+  "title": "Fix crash when the game prepares the microphone",
+  "group": "Steam Frame patches"
+ },
+ "frame.ovr_stable_user": {
+  "anchor": "frame-ovr_stable_user",
+  "title": "Keep the same Meta user between starts",
+  "group": "Steam Frame patches"
+ },
+ "frame.ovr_trace": {
+  "anchor": "frame-ovr_trace",
+  "title": "Trace Meta platform requests (diagnostics)",
+  "group": "Steam Frame patches"
+ },
+ "frame.ovrplatformcompat": {
+  "anchor": "frame-ovrplatformcompat",
+  "title": "Platform compat (ovrMessageType_ToString)",
+  "group": "Steam Frame patches"
+ },
+ "frame.ovrstubs": {
+  "anchor": "frame-ovrstubs",
+  "title": "Stub missing Meta platform functions",
+  "group": "Steam Frame patches"
+ },
+ "frame.pac_hints": {
+  "anchor": "frame-pac_hints",
+  "title": "Unpaired pointer-authentication checks",
+  "group": "Steam Frame patches"
+ },
+ "frame.sdl_clipboard": {
+  "anchor": "frame-sdl_clipboard",
+  "title": "SDL apps: start without a clipboard service",
+  "group": "Steam Frame patches"
+ },
+ "frame.slz_vulkan_hooks": {
+  "anchor": "frame-slz_vulkan_hooks",
+  "title": "Stress Level Zero: let Unity start Vulkan itself",
+  "group": "Steam Frame patches"
+ },
+ "frame.start_activity": {
+  "anchor": "frame-start_activity",
+  "title": "Start straight in VR (skip the 2D launcher)",
+  "group": "Steam Frame patches"
+ },
+ "frame.swapchain_limit": {
+  "anchor": "frame-swapchain_limit",
+  "title": "Allow swapchains larger than 4096 px",
+  "group": "Steam Frame patches"
+ },
+ "frame.tbxr_vendor": {
+  "anchor": "frame-tbxr_vendor",
+  "title": "Team Beef ports: treat the Frame as a Meta headset",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_gl_shim": {
+  "anchor": "frame-unity_gl_shim",
+  "title": "GL shim for Unity (no multisampled render-to-texture)",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_multipass": {
+  "anchor": "frame-unity_multipass",
+  "title": "Unity: render each eye separately (no multiview)",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_no_msaa": {
+  "anchor": "frame-unity_no_msaa",
+  "title": "Unity: disable MSAA",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_no_overlay_copy": {
+  "anchor": "frame-unity_no_overlay_copy",
+  "title": "Unity: skip OVROverlay layers (fades, splash screens)",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_oculus_check": {
+  "anchor": "frame-unity_oculus_check",
+  "title": "Unity: start VR without Meta's system apps",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_runtime_msaa_off": {
+  "anchor": "frame-unity_runtime_msaa_off",
+  "title": "Unity: keep MSAA off at runtime (OVRManager)",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_text_input": {
+  "anchor": "frame-unity_text_input",
+  "title": "Make Unity text fields work",
+  "group": "Steam Frame patches"
+ },
+ "frame.unity_user_presence": {
+  "anchor": "frame-unity_user_presence",
+  "title": "Unity: headset always counts as worn",
+  "group": "Steam Frame patches"
+ },
+ "frame.unreal_gl_shim": {
+  "anchor": "frame-unreal_gl_shim",
+  "title": "GL shim for Unreal (no multisampled render-to-texture)",
+  "group": "Steam Frame patches"
+ },
+ "frame.unreal_ovrp_entrypoints": {
+  "anchor": "frame-unreal_ovrp_entrypoints",
+  "title": "Unreal: stand-ins for OVRPlugin functions OVRPort lacks",
+  "group": "Steam Frame patches"
+ },
+ "frame.unreal_quest_keymap": {
+  "anchor": "frame-unreal_quest_keymap",
+  "title": "Unreal: Quest controller bindings (RPOC key map)",
+  "group": "Steam Frame patches"
+ },
+ "frame.unreal_quest_precompile": {
+  "anchor": "frame-unreal_quest_precompile",
+  "title": "Unreal: don't wait for the Quest shader precompile",
+  "group": "Steam Frame patches"
+ },
+ "frame.unreal_skip_obb_check": {
+  "anchor": "frame-unreal_skip_obb_check",
+  "title": "Unreal: start without the OBB check",
+  "group": "Steam Frame patches"
+ },
+ "frame.unreal_thumb_touch": {
+  "anchor": "frame-unreal_thumb_touch",
+  "title": "Unreal: thumb follows the capacitive touches",
+  "group": "Steam Frame patches"
+ },
+ "frame.vivox_audio_route": {
+  "anchor": "frame-vivox_audio_route",
+  "title": "Vivox voice chat: skip Android 12 audio routing",
+  "group": "Steam Frame patches"
+ },
+ "frame.vk_sanitize": {
+  "anchor": "frame-vk_sanitize",
+  "title": "Vulkan: drop invalid render-pass pointers",
+  "group": "Steam Frame patches"
+ },
+ "frame.vrapi_bridge": {
+  "anchor": "frame-vrapi_bridge",
+  "title": "VrApi → OpenXR bridge",
+  "group": "Steam Frame patches"
+ },
+ "frame.vrapi_stub": {
+  "anchor": "frame-vrapi_stub",
+  "title": "Quiet Meta's VrApi loader (OpenXR games)",
+  "group": "Steam Frame patches"
+ },
+ "frame.zink_shader_fix": {
+  "anchor": "frame-zink_shader_fix",
+  "title": "OpenGL ES: shader fixes (Vulkan layer under Zink)",
+  "group": "Steam Frame patches"
+ },
+ "patch_ac_nexus_no_appsw_72": {
+  "anchor": "patch_ac_nexus_no_appsw_72",
+  "title": "AC Nexus: no AppSW at 72 Hz",
+  "group": "Patches from OVRPort"
+ },
+ "patch_ac_nexus_no_appsw_90": {
+  "anchor": "patch_ac_nexus_no_appsw_90",
+  "title": "AC Nexus: no AppSW at 90 Hz",
+  "group": "Patches from OVRPort"
+ },
+ "patch_clean_up_frida": {
+  "anchor": "patch_clean_up_frida",
+  "title": "Clean up Frida leftovers in smali",
+  "group": "Patches from OVRPort"
+ },
+ "patch_copy_libraries": {
+  "anchor": "patch_copy_libraries",
+  "title": "Copy OVRPort libraries",
+  "group": "Patches from OVRPort"
+ },
+ "patch_copy_ovrplugin_vrapi": {
+  "anchor": "patch_copy_ovrplugin_vrapi",
+  "title": "Copy OVRPlugin if VrApi is present",
+  "group": "Patches from OVRPort"
+ },
+ "patch_disable_controller_offset": {
+  "anchor": "patch_disable_controller_offset",
+  "title": "Disable controller tracking offset",
+  "group": "Patches from OVRPort"
+ },
+ "patch_disable_meta_xr_audio_telemetry": {
+  "anchor": "patch_disable_meta_xr_audio_telemetry",
+  "title": "Disable Meta XR Audio telemetry",
+  "group": "Patches from OVRPort"
+ },
+ "patch_disable_space_warp": {
+  "anchor": "patch_disable_space_warp",
+  "title": "Disable application space warp if used",
+  "group": "Patches from OVRPort"
+ },
+ "patch_fix_min_android_sdk": {
+  "anchor": "patch_fix_min_android_sdk",
+  "title": "Fix minimal Android SDK",
+  "group": "Patches from OVRPort"
+ },
+ "patch_fix_unreal_crash": {
+  "anchor": "patch_fix_unreal_crash",
+  "title": "Fix UE4 crash with Unity stub",
+  "group": "Patches from OVRPort"
+ },
+ "patch_force_passthrough": {
+  "anchor": "patch_force_passthrough",
+  "title": "Force enable passthrough",
+  "group": "Patches from OVRPort"
+ },
+ "patch_generate_config": {
+  "anchor": "patch_generate_config",
+  "title": "Generate OVRPort config",
+  "group": "Patches from OVRPort"
+ },
+ "patch_launcher_entry": {
+  "anchor": "patch_launcher_entry",
+  "title": "Fix launcher icon entry",
+  "group": "Patches from OVRPort"
+ },
+ "patch_mark_allow_backup": {
+  "anchor": "patch_mark_allow_backup",
+  "title": "Mark application to allow backup",
+  "group": "Patches from OVRPort"
+ },
+ "patch_mark_as_debuggable": {
+  "anchor": "patch_mark_as_debuggable",
+  "title": "Mark application as debuggable",
+  "group": "Patches from OVRPort"
+ },
+ "patch_meta_xr_audio": {
+  "anchor": "patch_meta_xr_audio",
+  "title": "Patch Meta XR Audio",
+  "group": "Patches from OVRPort"
+ },
+ "patch_oculus_unity": {
+  "anchor": "patch_oculus_unity",
+  "title": "Patch Oculus detection for Unity",
+  "group": "Patches from OVRPort"
+ },
+ "patch_oculus_unreal": {
+  "anchor": "patch_oculus_unreal",
+  "title": "Patch Oculus detection for Unreal",
+  "group": "Patches from OVRPort"
+ },
+ "patch_remove_localized_names": {
+  "anchor": "patch_remove_localized_names",
+  "title": "Remove localized app names",
+  "group": "Patches from OVRPort"
+ },
+ "patch_remove_unreal_force_quit": {
+  "anchor": "patch_remove_unreal_force_quit",
+  "title": "Remove Unreal's ForceQuit",
+  "group": "Patches from OVRPort"
+ },
+ "patch_remove_uses_library": {
+  "anchor": "patch_remove_uses_library",
+  "title": "Remove uses-library",
+  "group": "Patches from OVRPort"
+ },
+ "patch_remove_vrapi": {
+  "anchor": "patch_remove_vrapi",
+  "title": "Remove VrApi library",
+  "group": "Patches from OVRPort"
+ },
+ "patch_replace_icon_label": {
+  "anchor": "patch_replace_icon_label",
+  "title": "Replace application label and icon",
+  "group": "Patches from OVRPort"
+ },
+ "patch_vr_metadata": {
+  "anchor": "patch_vr_metadata",
+  "title": "Pico/YVR/Quest metadata",
+  "group": "Patches from OVRPort"
+ },
+ "patch_vrapi_openxr": {
+  "anchor": "patch_vrapi_openxr",
+  "title": "VrApi → OpenXR adapter (OVRPort)",
+  "group": "Patches from OVRPort"
+ },
+ "pcvr.launch_args": {
+  "anchor": "pcvr-launch_args",
+  "title": "Launch options (SteamVR or OpenXR)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.libovr_redirect": {
+  "anchor": "pcvr-libovr_redirect",
+  "title": "Provide the Oculus runtime from Revive (Frame)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.no_crash_reporter": {
+  "anchor": "pcvr-no_crash_reporter",
+  "title": "No Unreal crash reporter",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.oculus_unreal": {
+  "anchor": "pcvr-oculus_unreal",
+  "title": "Patch Oculus detection for Unreal (Frame)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.proton_env": {
+  "anchor": "pcvr-proton_env",
+  "title": "Extra Proton settings (Frame)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.proton_log": {
+  "anchor": "pcvr-proton_log",
+  "title": "Proton debug log (Frame)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.proton_tool": {
+  "anchor": "pcvr-proton_tool",
+  "title": "Proton version (Frame)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.repack_launcher": {
+  "anchor": "pcvr-repack_launcher",
+  "title": "Use the repack's launcher (bundled Revive)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.revive": {
+  "anchor": "pcvr-revive",
+  "title": "Revive (Oculus LibOVR → OpenXR)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.revive_openvr": {
+  "anchor": "pcvr-revive_openvr",
+  "title": "Revive: SteamVR (OpenVR) backend on PC",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.steamvr_tuning": {
+  "anchor": "pcvr-steamvr_tuning",
+  "title": "Automatic SteamVR performance settings (this PC)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.vr_overlay": {
+  "anchor": "pcvr-vr_overlay",
+  "title": "SteamVR overlay app (Frame)",
+  "group": "PC VR (Proton and Revive)"
+ },
+ "pcvr.xr_timefix": {
+  "anchor": "pcvr-xr_timefix",
+  "title": "Frame OpenXR compatibility layer",
+  "group": "PC VR (Proton and Revive)"
+ }
+}

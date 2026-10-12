@@ -60,6 +60,12 @@ struct Runtime {
     std::array<XrViewConfigurationViewFovEPIC, 2> viewConfigFov{};
     std::array<float, 2> recommendedFovDegrees{};
     std::array<float, 2> locatedFovDegrees{};
+    // FramePort: the last live FOV of an earlier session (framebridge-vrapi-fov.txt in the app's external files).
+    // Games that read VrApi's FOV properties right after vrapi_Initialize (before any session, e.g. BlazeRush) and
+    // cache them get this instead of a 90 degree guess when the runtime has no XR_EPIC_view_configuration_fov.
+    std::array<float, 2> savedFovDegrees{};
+    bool savedFovValid = false;
+    int loggedFovSource = -1;
     std::array<XrView, 2> views{{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}};
     ovrSystemCreateInfoVulkan vk{};
     // GLES apps (no vrapi_CreateSystemVulkan): EGL objects from ovrModeParms.

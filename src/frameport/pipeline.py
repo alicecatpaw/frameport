@@ -25,7 +25,7 @@ from .core.paths import output_dir
 from .patches import upstream
 from .recommend import engine
 from .sources import quest_dump, rift_dump
-from .targets.base import Target
+from .targets.base import PC_LABEL, Target
 
 
 def add_path(path: Path, reporter: Reporter | None = None, on_added=None, force_rift: bool = False,
@@ -38,7 +38,9 @@ def add_path(path: Path, reporter: Reporter | None = None, on_added=None, force_
     path = Path(path)
     added = []
     known_apks = {str(Path(g["apk"]).resolve()) for g in library.games() if g.get("apk")} if only_new else set()
-    known_packages = {g["package"] for g in library.games()} if only_new else set()
+    # entries made from AXRB's PC-patched copies (no OBBs; older FramePort scanned them) get the original download
+    known_packages = {g["package"] for g in library.games()
+                      if not (g.get("apk") and quest_dump._axrb_patched(Path(g["apk"])))} if only_new else set()
 
     def done(entry):
         if only_new and entry["package"] in known_packages:  # already in the library (e.g. an unchanged Rift folder)
@@ -177,6 +179,8 @@ def add_rift_game(folder: Path, reporter: Reporter | None = None, tree=None, exe
         fields.update(recipe=library.recipe_to_dict(recipe), status=recipe.status)
     if not old or not (old.get("title_locked") or old.get("art_source") in ("oculusdb", "meta", "steam")):
         fields["title"] = recipe.title or a.label  # (store-matched titles are kept)
+    elif old.get("title_locked") and old.get("art_source") not in ("oculusdb", "meta", "steam"):
+        fields["auto_title"] = recipe.title or a.label  # the user's name stays; a reset brings this one
     stored = library.upsert_game(package, **fields)
     if art and not _has_art(package):
         _rift_art(stored, reporter)
@@ -208,8 +212,8 @@ def _rift_art(entry: dict, reporter: Reporter | None = None) -> dict:
         update["quest_package"] = found["quest_package"]
     if found.get("oculus_app_id"):
         update["oculus_app_id"] = found["oculus_app_id"]
-    if found.get("title") and not entry.get("title_locked"):
-        update["title"] = found["title"]
+    if found.get("title"):  # a name the user chose stays (a reset of it brings the store's)
+        update["auto_title" if entry.get("title_locked") else "title"] = found["title"]
     library.upsert_game(pkg, **update)
     try:
         thumbs.prewarm(pkg)
@@ -275,6 +279,92 @@ def steam_title(entry: dict) -> str:
     from .core.titles import display_title, twins
 
     return display_title(entry, twins(library.games()))
+
+
+TITLE_MAX = 128  # (the agent cuts Steam shortcut names to the same length)
+
+
+def clean_title(title: str | None) -> str:
+    """A name as the user typed it, made one line: no control characters, spaces collapsed, at most TITLE_MAX."""
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(title or "")).split())
+    return text[:TITLE_MAX]
+
+
+def store_title(entry: dict) -> str | None:
+    """The store's name for a game when FramePort fetched one (Meta store art comes with it), else None."""
+    from .artwork.fetch import artwork_dir
+
+    try:
+        f = artwork_dir(entry["package"]) / "title.txt"
+        return clean_title(f.read_text(encoding="utf-8")) or None if f.is_file() else None
+    except OSError:
+        return None
+
+
+def automatic_title(entry: dict) -> str:
+    """The name FramePort gives a game by itself (what Rename… → reset brings back): the current title unless the user
+    (or an install link) chose one; then the automatic name remembered at that moment, else the store's name or the
+    APK's label."""
+    if not entry.get("title_locked"):
+        return entry.get("title") or entry["package"]
+    return entry.get("auto_title") or store_title(entry) or (entry.get("analysis") or {}).get("label") or \
+        entry["package"]
+
+
+def title_suggestions(entry: dict) -> list[str]:
+    """Other names the Rename dialog offers: the automatic name and the store's name (when they differ from the
+    current title)."""
+    current = entry.get("title") or entry["package"]
+    out = []
+    for t in (automatic_title(entry), store_title(entry)):
+        if t and t != current and t not in out:
+            out.append(t)
+    return out
+
+
+def rename_game(package: str, title: str | None) -> dict:
+    """Rename a game in the library. The new title is locked (scans, artwork and store lookups and catalog updates
+    keep it); an empty title or the automatic name unlocks it again. Returns the entry. Installed copies keep their
+    old Steam name until sync_title (or the next install) updates them."""
+    if library.game(package) is None:
+        raise ValueError(f"{package} is not in the library")
+    title = clean_title(title)
+    old: dict = {}
+
+    def change(g: dict) -> None:
+        old.update(title=g.get("title"))
+        auto = automatic_title(g)
+        if not title or title == auto:
+            g["title"] = auto
+            g.pop("title_locked", None)
+            g.pop("auto_title", None)
+        else:
+            g.setdefault("auto_title", auto)
+            g["title"] = title
+            g["title_locked"] = True
+        if g["title"] != old["title"] and any(w != PC_LABEL for w in g.get("installs") or {}):
+            g["steam_name_stale"] = True  # the Frame's Steam library shows the old name until sync_title
+    entry = library.update_game(package, change)
+    if entry.get("title") != old.get("title"):
+        try:  # FramePort's own cover/banner (no store art) are coloured by the name: make them again
+            from .artwork.steam import ensure_cover
+
+            ensure_cover(package)
+        except Exception:  # noqa: BLE001 - artwork is optional
+            pass
+    return entry
+
+
+def sync_title(package: str, target: Target, reporter: Reporter) -> dict:
+    """Give an installed game its library name in Steam (after Rename…): the Frame (agent v77 `rename`, same shortcut
+    appid, Steam restarts once) or this PC's Steam (PC VR games)."""
+    entry = library.game(package)
+    title = steam_title(entry)
+    if target.kind == "pc":
+        return target.rename(package, title, reporter)
+    result = target.update_steam_art(package, reporter, title=title)
+    library.update_game(package, lambda g: (g.pop("steam_name_stale", None), g.pop("steam_art_stale", None)))
+    return result
 
 
 def is_rift(entry: dict) -> bool:
@@ -432,6 +522,8 @@ def add_from_link(manifest, path: Path, reporter: Reporter | None = None, icon: 
     fields = {"link": {"source": manifest.source, "name": manifest.name, "time": time.time()}}
     if not manifest.direct:  # a manifest (not a bare file link) names it
         fields.update(title=manifest.name, title_locked=True)
+        if not entry.get("title_locked"):  # what Rename… → reset brings back
+            fields["auto_title"] = entry.get("title") or pkg
     # FramePort's manifest extension: a description where no store has one, the icon unless the user picked one
     details = dict(library.game(pkg).get("details") or {})
     if manifest.description and not details.get("description"):
@@ -450,13 +542,44 @@ def add_from_link(manifest, path: Path, reporter: Reporter | None = None, icon: 
     return library.game(pkg)
 
 
+def is_overlay_app(entry: dict) -> bool:
+    """A SteamVR overlay app (fpsVR & co.): installed for SteamVR to draw over games; no launch test."""
+    if is_linux(entry):
+        return linux_overlay(entry) is not None
+    if not is_rift(entry) or not entry.get("recipe"):
+        return False
+    return "pcvr.vr_overlay" in library.recipe_from_dict(entry["recipe"]).patches
+
+
+def linux_overlay(entry: dict) -> dict | None:
+    """A Linux app that is a SteamVR overlay app (analysis "vr_overlay"; the entry's "vr_overlay" field turns it off,
+    "vr_overlay_autostart" = start with SteamVR, default on): the agent's overlay argument, else None."""
+    from .analysis import vroverlay
+
+    extra = (entry.get("analysis") or {}).get("extra") or {}
+    if not extra.get("vr_overlay") or entry.get("vr_overlay", True) is False:
+        return None
+    return vroverlay.install_args(extra, entry.get("vr_overlay_autostart", True) is not False)
+
+
+def rift_overlay(entry: dict, recipe) -> dict | None:
+    """pcvr.vr_overlay → the agent's overlay argument (None: not an overlay app)."""
+    from .analysis import vroverlay
+
+    if "pcvr.vr_overlay" not in recipe.patches:
+        return None
+    extra = (entry.get("analysis") or {}).get("extra") or {}
+    return vroverlay.install_args(extra, recipe.params("pcvr.vr_overlay").get("autostart", True) is not False)
+
+
 def install_linux(package: str, target: Target, reporter: Reporter, add_to_library: bool = True) -> dict:
     entry = library.game(package)
     extra = (entry.get("analysis") or {}).get("extra") or {}
     result = target.install_linux(package, steam_title(entry), Path(entry["game_dir"]), entry["exe"],
                                   extra.get("files"), bool(extra.get("appimage")), bool(extra.get("openxr")),
                                   reporter, x86_64=bool(extra.get("x86_64")),
-                                  desktop_entry=entry.get("desktop_entry", True) is not False)
+                                  desktop_entry=entry.get("desktop_entry", True) is not False,
+                                  overlay=linux_overlay(entry))
     if extra.get("x86_64"):
         reporter.check("x86 translation", True, "runs through FEX on SteamOS's x86 system (its libraries come from "
                                                  "there; not checked ahead)")
@@ -478,8 +601,11 @@ def add_game(src: SourceGame, reporter: Reporter | None = None) -> dict:
     a.extra["lang_packs"] = langpacks.find_tags(_data_folder(src))
     a.extra["asset_files"] = langpacks.find_content_files(_data_folder(src))
     recipe = engine.suggest(a)
+    old = library.game(a.package) or {}
+    # a name the user chose (Rename…, an install link) stays when the game is scanned again
+    names = {"auto_title": recipe.title or a.label} if old.get("title_locked") else {"title": recipe.title or a.label}
     return library.upsert_game(
-        a.package, title=recipe.title or a.label, name=src.name, apk=str(src.apk),
+        a.package, **names, name=src.name, apk=str(src.apk),
         data_dir=str(src.data_dir) if src.data_dir else None, data_files=src.data_files, data_bytes=src.data_bytes(),
         origin=str(src.origin),
         analysis=a.to_dict(), recipe=library.recipe_to_dict(recipe), suggested=library.recipe_to_dict(recipe),
@@ -602,12 +728,7 @@ def set_recipe(package: str, recipe: Recipe) -> None:
 
 
 def reset_recipe(package: str) -> Recipe:
-    if is_rift(library.game(package) or {}):
-        entry = library.game(package)
-        a = library.analysis_from_dict(entry["analysis"])
-        recipe = engine.suggest(a)
-        set_recipe(package, recipe)
-        return recipe
+    """Back to the suggested recipe (catalog or heuristics) for the game's analysis (Quest and Rift alike)."""
     entry = library.game(package)
     recipe = engine.suggest(library.analysis_from_dict(entry["analysis"]))
     set_recipe(package, recipe)
@@ -695,9 +816,14 @@ def prepare_as_is(package: str, reporter: Reporter) -> dict:
     art, store_title = artwork.fetch(package, apk)
     info = {"apk": str(apk), "alt_apk": None, "sha256": sha256(apk), "alt_sha256": None, "applied": [],
             "checks": checks, "ok": all(c["ok"] is not False for c in checks), "as_is": True,
-            "recipe_fp": recipe_fingerprint(entry["recipe"], package)}
+            "recipe_fp": recipe_fingerprint(entry["recipe"], package), "source_version": _source_version(entry)}
     library.upsert_game(package, build=info, title=entry.get("title") or store_title)
     return info
+
+
+def _source_version(entry: dict) -> str | None:
+    """The game version a build was made from: a newer APK added later shows the game as outdated (GitHub #161)."""
+    return (entry.get("analysis") or {}).get("version") or None
 
 
 def recipe_fingerprint(recipe: dict, package: str = "") -> str:
@@ -735,9 +861,24 @@ def build_game(package: str, reporter: Reporter, outdir: Path | None = None) -> 
     build_info = {"apk": str(res.apk), "alt_apk": str(res.alt_apk) if res.alt_apk else None, "sha256": res.sha256,
                   "alt_sha256": res.alt_sha256, "applied": res.applied, "checks": res.checks, "ok": res.ok,
                   "overport": res.meta.get("overport"), "recipe_fp": recipe_fingerprint(entry["recipe"], package),
-                  "superseded": res.meta.get("superseded") or {}}
+                  "superseded": res.meta.get("superseded") or {}, "source_version": _source_version(entry)}
     library.upsert_game(package, build=build_info, title=entry.get("title") or store_title)
     return build_info
+
+
+def _find_late_data(entry: dict, reporter: Reporter | None = None) -> dict:
+    """A game added without data files: look for them again next to its APK (the user may have copied the OBBs in
+    afterwards, or added the APK alone). Found → stored, like a fresh scan would."""
+    src_apk = Path(entry["apk"])
+    if not src_apk.is_file():
+        return entry
+    src = quest_dump.from_path(src_apk)
+    if not src or not src.data_dir:
+        return entry
+    if reporter:
+        reporter.log(f"found the game's data files: {src.data_dir}")
+    return library.upsert_game(entry["package"], data_dir=str(src.data_dir), data_files=src.data_files,
+                               data_bytes=src.data_bytes())
 
 
 def install_game(package: str, target: Target, reporter: Reporter, apk_only: bool = False,
@@ -760,6 +901,8 @@ def install_game(package: str, target: Target, reporter: Reporter, apk_only: boo
         return install_game(package, target, reporter, apk_only, add_to_library)
     if not test_build and b.get("superseded"):  # workarounds this build left out (upstream fixed): not in settings.conf
         recipe = dataclasses.replace(recipe, patches=upstream.without_superseded(recipe.patches, b["superseded"]))
+    if not entry.get("data_dir") and entry.get("apk") and not apk_only:
+        entry = _find_late_data(entry, reporter)  # OBBs copied next to the APK after it was added (GitHub #156)
     data_dir = Path(entry["data_dir"]) if entry.get("data_dir") else None
     title = steam_title(entry)
     result = target.install(package, title, apk, data_dir, recipe, reporter, apk_only,
@@ -899,7 +1042,11 @@ def remove_converted_copies(package: str) -> int:
 
 def _record_install(package: str, where: str, record: dict) -> None:
     """Merge into the game's current install records (the entry read before a long install may be stale)."""
-    library.update_game(package, lambda g: g.setdefault("installs", {}).__setitem__(where, record))
+    def change(g: dict) -> None:
+        g.setdefault("installs", {})[where] = record
+        if where != PC_LABEL:  # the install gave the Frame's shortcut the current name
+            g.pop("steam_name_stale", None)
+    library.update_game(package, change)
 
 
 def install_rift(package: str, target: Target, reporter: Reporter, add_to_library: bool = True) -> dict:
@@ -914,7 +1061,8 @@ def install_rift(package: str, target: Target, reporter: Reporter, add_to_librar
     rdir = revive.revive_dir() if "pcvr.revive" in recipe.patches else None
     result = target.install_pcvr(package, title, Path(entry["game_dir"]), entry["exe"], recipe, reporter,
                                  revive_dir=rdir, revive_version=revive.installed_version() if rdir else None,
-                                 exe_sha256=entry["build"].get("sha256"), art_lookup=entry.get("quest_package"))
+                                 exe_sha256=entry["build"].get("sha256"), art_lookup=entry.get("quest_package"),
+                                 overlay=rift_overlay(entry, recipe))
     if add_to_library:
         target.add_to_library([package], reporter)
     _record_install(package, target.label, {"exe": entry["exe"], "result": result, "time": time.time()})
@@ -962,18 +1110,24 @@ def proton_alternative_worth_trying(package: str, verdict: str | None) -> bool:
 
 def useful_suggestions(package: str, suggestions: list[str]) -> list[str]:
     """Triage suggestions that would change something: not already on (a value suggestion: not already that value),
-    and not conflicting with the recipe (e.g. no Revive for a repack that runs its own)."""
+    applicable to the game, and not conflicting with the recipe (e.g. no Revive for a repack that runs its own)."""
     from .patches.base import REGISTRY
     from .validate.triage import split_suggestion
 
     entry = library.game(package) or {}
     patches = (entry.get("recipe") or {}).get("patches") or {}
+    try:
+        analysis = library.analysis_from_dict(entry["analysis"]) if entry.get("analysis") else None
+    except Exception:  # noqa: BLE001
+        analysis = None
     out = []
     for s in suggestions:
         pid, value = split_suggestion(s)
         p = REGISTRY.get(pid)
         if p and any(c in patches for c in p.conflicts):
             continue
+        if p and analysis is not None and not p.applies(analysis):
+            continue  # can't matter for this game, e.g. GLES-only 360° emulation for a Vulkan game (GitHub #138)
         if pid in patches and (value is None or _same_value((patches[pid] or {}).get("value"), value)):
             continue
         if s not in out:
@@ -1134,6 +1288,13 @@ def share_working_config(package: str, status: str = "works", notes: str = "",
                          frame_info: dict | None = None) -> str:
     """Save the game's recipe as a known-good user recipe and return a prefilled GitHub issue link that submits it
     to the catalog (a maintainer turns accepted ones into a PR)."""
+    return share_working_config_links(package, status, notes, frame_info).form
+
+
+def share_working_config_links(package: str, status: str = "works", notes: str = "",
+                               frame_info: dict | None = None):
+    """share_working_config's issue.IssueLinks: the form link, a plain issue link and the Markdown body (for
+    browsers that open GitHub's form with empty fields, GitHub #167)."""
     from .diag import bundle, issue, redact
     from .recommend import catalog
 
@@ -1145,12 +1306,18 @@ def share_working_config(package: str, status: str = "works", notes: str = "",
                 "frame_build": (env.get("frame") or {}).get("build_id"),
                 "agent": (env.get("frame") or {}).get("agent_version")}
     entry = save_known_good(package, status=status, notes=notes or None, verified=verified)
-    return issue.working_config_url(g, catalog.to_yaml(entry), status, notes, env, redact.default(frame_info))
+    return issue.working_config_links(g, catalog.to_yaml(entry), status, notes, env, redact.default(frame_info))
 
 
 def problem_report(package: str | None, description: str, bundle_path: Path | None,
                    frame_info: dict | None = None) -> str:
     """A prefilled GitHub bug-report link (the user attaches the diagnostics zip)."""
+    return problem_report_links(package, description, bundle_path, frame_info).form
+
+
+def problem_report_links(package: str | None, description: str, bundle_path: Path | None,
+                         frame_info: dict | None = None):
+    """problem_report's issue.IssueLinks (form link, plain issue link, Markdown body)."""
     from .diag import bundle, issue, redact
     from .recommend import catalog
 
@@ -1161,5 +1328,5 @@ def problem_report(package: str | None, description: str, bundle_path: Path | No
             recipe = catalog.to_yaml(catalog.entry_from_library(g, status=g.get("status") or "unknown"))
         except Exception:  # noqa: BLE001
             recipe = ""
-    return issue.problem_url(g, description, bundle.env_info(frame_info),
-                             bundle_path.name if bundle_path else None, recipe, redact.default(frame_info))
+    return issue.problem_links(g, description, bundle.env_info(frame_info),
+                               bundle_path.name if bundle_path else None, recipe, redact.default(frame_info))

@@ -19,7 +19,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from ..core import cache
-from ..core.paths import tools_dir, write_atomic
+from ..core.paths import localize, tools_dir, write_atomic
 
 ADOPTIUM = "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={arch}&image_type=jre&os={os}"
 # overport's CLI: maintained in the downstream fork Android-XR-Bridge/OVRPort since 1.2.5 (stable channel = plain
@@ -54,7 +54,7 @@ def _state_file() -> Path:
 
 def _state() -> dict:
     try:
-        return json.loads(_state_file().read_text())
+        return localize(json.loads(_state_file().read_text()))
     except (OSError, ValueError):
         return {}
 
@@ -64,13 +64,25 @@ def _save_state(state: dict) -> None:
 
 
 # ------------------------------------------------------------------------------------------ Java
+def _java_key() -> str:
+    """The Java entry of tools.json: one per OS, since a data folder can be shared by Windows and WSL."""
+    return "java-{}-{}".format(*_os_arch())
+
+
 def java_path() -> Path | None:
     if os.environ.get("FRAMEPORT_JAVA"):
         return Path(os.environ["FRAMEPORT_JAVA"])
-    st = _state().get("java")
+    state = _state()
+    st = state.get(_java_key())
+    if not st and state.get("java"):  # before 1.0.4: one entry; it's this OS's if it has this OS's java name
+        st = state["java"] if Path(state["java"]["path"]).name == _java_exe() else None
     if st and Path(st["path"]).exists():
         return Path(st["path"])
     return None
+
+
+def _java_exe() -> str:
+    return "java.exe" if sys.platform == "win32" else "java"
 
 
 def install_java(progress=None) -> ToolStatus:
@@ -78,23 +90,23 @@ def install_java(progress=None) -> ToolStatus:
     info = cache.http_get(ADOPTIUM.format(os=osname, arch=arch)).json()[0]
     pkg = info["binary"]["package"]
     version = info["version"]["semver"]
-    dest = tools_dir() / f"jre-{version}"
+    dest = tools_dir() / f"jre-{version}-{osname}-{arch}"
     if not dest.exists():
         archive = cache.download(pkg["link"], tools_dir() / pkg["name"], progress, expected_sha256=pkg["checksum"])
-        tmp = tools_dir() / f".jre-{version}.extract"
+        tmp = tools_dir() / f".jre-{version}-{osname}-{arch}.extract"
         shutil.rmtree(tmp, ignore_errors=True)
         _extract(archive, tmp)
         top = next(tmp.iterdir())
         top.rename(dest)
         shutil.rmtree(tmp, ignore_errors=True)
         archive.unlink(missing_ok=True)
-    exe = "java.exe" if sys.platform == "win32" else "java"
+    exe = _java_exe()
     candidates = [dest / "bin" / exe, dest / "Contents/Home/bin" / exe]
     java = next(p for p in candidates if p.exists())
     if sys.platform != "win32":
         java.chmod(0o755)
     state = _state()
-    state["java"] = {"version": version, "path": str(java)}
+    state[_java_key()] = {"version": version, "path": str(java)}
     _save_state(state)
     return ToolStatus("java", True, version, java)
 

@@ -35,7 +35,7 @@ def patch_dex(dex: Dex) -> list[str]:
 class VivoxAudioRoute(Patch):
     id = "frame.vivox_audio_route"
     title = "Vivox voice chat: skip Android 12 audio routing"
-    description = ("Vivox's voice-chat SDK (e.g. Green Hell VR) checks the audio route with Android 12 methods "
+    description = ("Vivox's voice-chat SDK (for example Green Hell VR) checks the audio route with Android 12 methods "
                    "(AudioManager communication devices) without checking the Android version; Lepton runs Android "
                    "11, so the game crashes at start with a NoSuchMethodError. Those Vivox methods return at once "
                    "instead (an in-place edit of classes.dex); voice chat keeps the default audio route.")

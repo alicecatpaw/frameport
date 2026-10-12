@@ -63,6 +63,9 @@ def suggest(analysis: Analysis, use_catalog: bool = True) -> Recipe:
             recipe.reasons["device.files"] = why
         if entry.lepton_env:
             recipe.patches["device.lepton_env"] = {"env": dict(entry.lepton_env)}
+        if entry.config_sync:
+            recipe.patches["device.config_sync"] = {"files": {k: dict(v) for k, v in entry.config_sync.items()}}
+            recipe.reasons["device.config_sync"] = why
         if entry.foveation:
             recipe.patches["device.foveation"] = {"mode": entry.foveation}
             recipe.reasons["device.foveation"] = why

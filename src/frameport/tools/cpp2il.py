@@ -28,6 +28,10 @@ def asset_suffix() -> str:
     return "Linux-ARM64" if arm else "Linux"
 
 
+def _exe_name() -> str:
+    return "Cpp2IL.exe" if sys.platform == "win32" else "Cpp2IL"
+
+
 def pick_release(releases: list[dict], suffix: str) -> tuple[str, str] | None:
     """(version, download url) of the newest release that has an executable for this computer."""
     for rel in releases:
@@ -40,7 +44,7 @@ def pick_release(releases: list[dict], suffix: str) -> tuple[str, str] | None:
 def path() -> Path | None:
     if os.environ.get("FRAMEPORT_CPP2IL"):
         return Path(os.environ["FRAMEPORT_CPP2IL"])
-    found = sorted(tools_dir().glob("cpp2il-*/Cpp2IL*"))
+    found = sorted(tools_dir().glob(f"cpp2il-*/{_exe_name()}"))  # the data folder may hold other OSes' copies too
     return found[-1] if found else None
 
 
@@ -59,7 +63,7 @@ def ensure(progress=None) -> Path:
     if picked is None:
         raise RuntimeError("couldn't find a Cpp2IL download for this computer")
     version, url = picked
-    exe = tools_dir() / f"cpp2il-{version}" / ("Cpp2IL.exe" if sys.platform == "win32" else "Cpp2IL")
+    exe = tools_dir() / f"cpp2il-{version}" / _exe_name()
     cache.download(url, exe, progress)
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return exe

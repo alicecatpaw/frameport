@@ -1,7 +1,7 @@
 # Tested games
 
-Games tested on the Steam Frame with FramePort's recipes. Games not listed here may work too: FramePort suggests patches for them, and a working config can be shared from the app (**Share working config…**).
-Tested a game? [Share a working config](https://github.com/spoopyghosty0/frameport/issues/new?template=working-config.yml) or [report a problem](https://github.com/spoopyghosty0/frameport/issues/new?template=bug-report.yml) (in the app: the game's **…** menu does both and fills in the details).
+Games tested on the Steam Frame with FramePort. Games not listed may work too: FramePort suggests patches for them. Got one working? [Share its recipe](INSTALL.md#share-a-recipe-or-report-a-problem).
+
 Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 
 | Game | Platform | Status | Notes |
@@ -25,12 +25,16 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | BodyCombat | Quest | ✅ Works |  |
 | BONELAB | Quest | ✅ Works |  |
 | Carve Snowboarding | Quest | ✅ Works |  |
+| Caves | Quest | ✅ Works |  |
 | Clockwork | Quest | ✅ Works |  |
 | Cook-Out | Quest | ✅ Works |  |
 | Creed | Quest | ✅ Works |  |
 | cubism | Quest | ✅ Works |  |
+| Deep Cuts | Quest | ✅ Works |  |
 | Demeter | Quest | ✅ Works |  |
 | Dinosaur Island | Quest | ✅ Works |  |
+| Doom3Quest | Quest | ✅ Works |  |
+| Down the Rabbit Hole | Quest | ✅ Works |  |
 | Eleven: Table Tennis VR | PC VR | ✅ Works |  |
 | Espire 2 | Quest | ✅ Works |  |
 | Genotype | Quest | ✅ Works |  |
@@ -64,12 +68,16 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Please Don't Touch Anything | Quest | ✅ Works |  |
 | PowerWash Simulator VR | Quest | ✅ Works |  |
 | QuestCraft | Quest | ✅ Works |  |
+| Racket: Nx | Quest | ✅ Works |  |
+| RC Pilot Trainer | Quest | ✅ Works |  |
 | Retronika | Quest | ✅ Works |  |
+| Retropolis | Quest | ✅ Works |  |
 | Richie's Plank Experience | Quest | ✅ Works |  |
 | Rick and Morty: Virtual Rick-ality | PC VR | ✅ Works |  |
 | Riven | Quest | ✅ Works |  |
 | Robo Recall | Quest | ✅ Works |  |
 | RUINSMAGUS | Quest | ✅ Works |  |
+| Shores of Loci | Quest | ✅ Works |  |
 | Sniper Elite VR | Quest | ✅ Works |  |
 | Sniper Elite VR: Winter Warrior | Quest | ✅ Works |  |
 | Space Pirate Trainer Quest | Quest | ✅ Works |  |
@@ -95,10 +103,14 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Wallace & Gromit in The Grand Getaway | Quest | ✅ Works |  |
 | Waltz of the Wizard: Extended Edition | Quest | ✅ Works |  |
 | Wander | Quest | ✅ Works |  |
+| ZombielandVR | Quest | ✅ Works |  |
+| Ancient_Dungeon | Quest | ⚠️ Works with issues | Multiplayer isn't available (offline). |
 | Arcsmith | Quest | ⚠️ Works with issues | Right eye distorts during movement (unresolved; swap, tracking, Valve layers, depth and pacing ruled out). |
 | Assassin's Creed Nexus | Quest | ⚠️ Works with issues | Some launch warning text is still upside down; the rest of the UI is fixed by flip emulation. |
 | Does it Stack? | Quest | ⚠️ Works with issues | Mixed reality mode does not work (works on Demeo), everything else seems to be OK |
-| Doom3Quest | Quest | ⚠️ Works with issues | HUD and PDA show with frame.gl_multiview_fbo (Xandrix1987's headset test, GitHub 77, no frame-rate drop with the PDA open). |
+| End Space | Quest | ⚠️ Works with issues | Controls stop responding after the first mission loads. |
+| ExploreVR | Quest | ⚠️ Works with issues | The 3D world warps and shifts with head movement (wrong perspective). |
+| Freedom | Quest | ⚠️ Works with issues | Volume can't be changed in the game. |
 | Myst | Quest | ⚠️ Works with issues | Minor graphical glitches on some objects. |
 | Phantom: Covert Ops | Quest | ⚠️ Works with issues | DLC/store button crashes (no Meta store). |
 | Pinball FX VR | Quest | ⚠️ Works with issues | Plays; mixed reality mode not working yet. |
@@ -107,8 +119,9 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Time Stall | Quest | ⚠️ Works with issues | Both eyes distort during movement (unresolved). |
 | WiiCompiled VR | Quest | ⚠️ Works with issues | To add a game: in FramePort's Files tab, upload your .wcgame file to this game's storage, folder Android/data/org.wiicompiled.quest/files/WiiCompiledOpenXRVR… |
 | BlazeRush | Quest | ❌ Doesn't run | Starts and reaches the menu room, but the room shows no controllers and ignores all input (it all reaches the game); no fix yet. |
-| Eleven | Quest | ❌ Doesn't run | Needs the Meta Horizon / Oculus Platform SDK to initialize; stays stuck on the startup screen without Meta's platform service on the Frame. |
+| Eleven Table Tennis | Quest | ❌ Doesn't run | Stops at the splash screen. Needs the Meta Horizon / Oculus Platform SDK to initialize; stays stuck on the startup screen without Meta's platform service on the Frame. |
 | Espire 1: VR Operative (Quest Edition) | Quest | ❌ Doesn't run | Mesa GL driver crash during texture upload. |
+| GOLF+ | Quest | ❌ Doesn't run | Black screen. |
 | HITMAN 3 VR: Reloaded | Quest | ❌ Doesn't run | Vulkan driver crash (freedreno), even without Valve layers. |
 | Journey of the Gods | Quest | ❌ Doesn't run | 32-bit only; the Frame has no AArch32. |
 | Roblox | Quest | ❌ Doesn't run | Crashes on its first VR frame on the Frame. |

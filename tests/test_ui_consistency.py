@@ -1,0 +1,140 @@
+"""GUI consistency guard: dialogs, spinners and inputs come from the shared helpers in ui/components.py (C.dialog,
+C.viewer, C.spinner, C.field/C.search/C.dropdown), icons are line icons (ROUNDED, or OUTLINED where ROUNDED is
+filled), and radii are tokens."""
+import ast
+from pathlib import Path
+
+import flet as ft
+
+UI = Path(__file__).resolve().parents[1] / "src" / "frameport" / "ui"
+COMPONENTS = UI / "components.py"
+# controls only components.py may create (everything else uses its helper)
+SHARED = {"AlertDialog": "C.dialog / C.viewer", "ProgressRing": "C.spinner", "TextField": "C.field / C.search",
+          "Dropdown": "C.dropdown", "SegmentedButton": "C.segmented"}
+# justified exceptions: (file name, control) -> why
+ALLOWED: dict[tuple[str, str], str] = {}
+
+
+def _files():
+    return sorted(UI.rglob("*.py"))
+
+
+def _ft_calls(tree: ast.AST):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
+                isinstance(node.func.value, ast.Name) and node.func.value.id == "ft":
+            yield node.func.attr, node
+
+
+def test_shared_controls_only_from_components():
+    bad = []
+    for path in _files():
+        if path == COMPONENTS:
+            continue
+        for name, node in _ft_calls(ast.parse(path.read_text(encoding="utf-8"))):
+            if name in SHARED and (path.name, name) not in ALLOWED:
+                bad.append(f"{path.relative_to(UI)}:{node.lineno}: ft.{name}( -> use {SHARED[name]}")
+    assert not bad, "\n".join(bad)
+
+
+# The icon rule is visual weight, not the suffix: every icon is a line icon. Material's ROUNDED family is the line
+# style for most glyphs (tune, delete_outline, folder_open, …) but FILLED for these, so they use their OUTLINED twin
+# (checked side by side in a render: e.g. ROUNDED monitor_heart / bedtime are solid shapes next to line icons).
+# Status marks (check_circle, error, cancel next to them) stay filled on purpose: they're badges, not actions.
+LINE_OUTLINED = {
+    "BEDTIME", "BUG_REPORT", "BUILD_CIRCLE", "CHECK_BOX", "CLEANING_SERVICES", "CREATE_NEW_FOLDER", "DANGEROUS",
+    "DELETE_FOREVER", "DESCRIPTION", "DO_NOT_DISTURB_ON", "DRIVE_FILE_RENAME_OUTLINE", "DRIVE_FOLDER_UPLOAD",
+    "EXTENSION_OFF", "FILE_OPEN", "FILTER_ALT", "FOLDER", "FOLDER_OFF", "FOLDER_SPECIAL", "FOLDER_ZIP", "GRID_VIEW",
+    "HEALING", "HOME", "IMAGE", "INSERT_DRIVE_FILE", "LABEL", "LIBRARY_ADD", "MONITOR_HEART", "MOVIE",
+    "NEW_RELEASES", "PHOTO_CAMERA", "PIN", "SELL", "SEND", "SNIPPET_FOLDER", "SPORTS_ESPORTS", "STOP_CIRCLE",
+    "STOREFRONT", "STORAGE", "THUMB_UP", "UPLOAD_FILE", "VIDEO_LIBRARY", "VIDEOGAME_ASSET", "VOLUNTEER_ACTIVISM",
+}
+
+
+def test_line_style_icons():
+    """ROUNDED where it is the line style; OUTLINED only for the glyphs whose ROUNDED variant is filled."""
+    names = {m.name for m in ft.Icons}
+    bad = []
+    for path in _files():
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and
+                    node.value.attr == "Icons"):
+                continue
+            if node.attr.endswith("_OUTLINED"):
+                base_ = node.attr.removesuffix("_OUTLINED")
+                if base_ + "_ROUNDED" in names and base_ not in LINE_OUTLINED:
+                    bad.append(f"{path.relative_to(UI)}:{node.lineno}: Icons.{node.attr} -> Icons.{base_}_ROUNDED")
+            elif node.attr.endswith("_ROUNDED") and node.attr.removesuffix("_ROUNDED") in LINE_OUTLINED:
+                bad.append(f"{path.relative_to(UI)}:{node.lineno}: Icons.{node.attr} is filled -> _OUTLINED")
+    assert not bad, "\n".join(bad)
+
+
+def test_radii_are_tokens():
+    """radius=/border_radius= never a bare number in ui/ (T.RADIUS, T.RADIUS_SM, T.RADIUS_XS or T.px(...))."""
+    bad = []
+    for path in _files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # a RadialGradient's radius is a fraction of the box, not pixels
+        fractions = {id(k) for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                     and n.func.attr == "RadialGradient" for k in n.keywords}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg in ("radius", "border_radius") and \
+                    id(node) not in fractions and \
+                    isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
+                bad.append(f"{path.relative_to(UI)}:{node.value.lineno}: {node.arg}={node.value.value}")
+    assert not bad, "\n".join(bad)
+
+
+def test_title_sizes_are_tokens():
+    """C.title(text, size): the size is a token (T.T_DISPLAY …), never a raw number (it wouldn't scale)."""
+    bad = []
+    for path in _files():
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and (isinstance(node.func, ast.Attribute) and node.func.attr == "title"
+                                               or isinstance(node.func, ast.Name) and node.func.id == "title"):
+                sizes = node.args[1:2] + [k.value for k in node.keywords if k.arg == "size"]
+                if any(isinstance(s, ast.Constant) and isinstance(s.value, (int, float)) for s in sizes):
+                    bad.append(f"{path.relative_to(UI)}:{node.lineno}")
+    assert not bad, "\n".join(bad)
+
+
+def test_dialog_helper_style():
+    """C.dialog: the shared look (12 px corners, semibold title, SURFACE_2, actions at the end, size tokens)."""
+    from frameport.ui import components as C
+    from frameport.ui import theme as T
+
+    d = C.dialog("Title", ft.Text("body"), [C.ghost("Cancel"), C.primary("OK")], size="s")
+    assert d.shape.radius == T.RADIUS and d.bgcolor == T.SURFACE_2
+    assert d.title.weight == ft.FontWeight.W_600
+    assert d.content.width == T.DIALOG_S
+    assert d.actions_alignment == ft.MainAxisAlignment.END
+    assert C.dialog("T", ft.Text("b"), size="l").content.width == T.DIALOG_L
+    assert C.dialog("T", ft.Text("b"), title_actions=[ft.Text("1 more")]).title.controls[-1].value == "1 more"
+
+
+def test_danger_matches_primary_metrics():
+    from frameport.ui import components as C
+    from frameport.ui import theme as T
+
+    p, d = C.primary("Go"), C.danger("Delete")
+    assert d.style.padding == p.style.padding and d.style.text_style.size == p.style.text_style.size
+    assert d.style.bgcolor[ft.ControlState.DEFAULT] == T.ERROR
+    menu = C.primary_menu("Add", ft.Icons.ADD_ROUNDED, [])
+    assert isinstance(menu.content, ft.FilledButton) and menu.content.style.padding == p.style.padding
+
+
+def test_segmented_and_selected_style():
+    from frameport.ui import components as C
+    from frameport.ui import theme as T
+
+    seen = []
+    seg = C.segmented([("a", "A"), ("b", "B")], "a", seen.append)
+    first, second = seg.content.controls
+    assert seg.data == "a" and first.content.color == T.TEXT and second.content.color == T.TEXT_2
+    second.on_click(None)
+    assert seen == ["b"] and seg.data == "b" and second.content.color == T.TEXT
+    box, icon, text = ft.Container(), ft.Icon(ft.Icons.FOLDER_ROUNDED), ft.Text("x")
+    C.selected_style(box, True, icon, text)
+    assert text.color == T.TEXT and (box.gradient is not None if T.DUAL else box.bgcolor == T.ACCENT_SOFT)
+    C.selected_style(box, False, icon, text)
+    assert box.gradient is None and box.bgcolor is None and icon.color == T.TEXT_2

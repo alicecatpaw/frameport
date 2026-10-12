@@ -1,0 +1,20 @@
+package: com.innerspacevr.afishermanstale
+title: Fisherman
+status: issues
+notes: Loading screens have corruption, but everything works otherwise.
+tested_version: '1.087'
+engine: Unreal
+xr: VrApi
+alt_overport:
+- patch_remove_unreal_force_quit
+adapter:
+  haptic_fix: 1
+verified:
+  date: '2026-10-11'
+  known_good_sha256: c645ca6321845bd460b4ff1b8ac871e941adb26d280cccba0285e79e4a96a231
+  app: 0.12.0
+  overport_cli: 1.2.5
+  frame_build: '20261007.6125817'
+  agent: 59
+  issue: 175
+source_hint: A Fisherman's Tale
