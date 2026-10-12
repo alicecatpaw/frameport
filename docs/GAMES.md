@@ -60,6 +60,7 @@ Generated from [catalog/games](../catalog/games) by `scripts/compat_list.py`.
 | Kill It With Fire VR | Quest | ✅ Works |  |
 | Ladder | Quest | ✅ Works |  |
 | Lambda1VR | Quest | ✅ Works |  |
+| Laser Dance | Quest | ✅ Works |  |
 | LEGO® Bricktales | Quest | ✅ Works |  |
 | Lucky's Tale | Quest | ✅ Works |  |
 | Marvel's Deadpool VR | Quest | ✅ Works |  |
