@@ -10,8 +10,6 @@ adapter:
   haptic_fix: 1
   scene_emul: 1
   passthrough_emul: 1
-  scene_width: 4.0
-  scene_depth: 2.0
 frame:
 - frame.meta_permissions
 - frame.meta_depth_occlusion
