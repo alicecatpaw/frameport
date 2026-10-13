@@ -36,7 +36,8 @@ IL2CPP_METADATA = "assets/bin/Data/Managed/Metadata/global-metadata.dat"
 # 12: eos_keychain (Epic Online Services' Java keychain: frame.eos_keychain_loop, GitHub #214); CryEngine also from
 #     libAndroidLauncher.so + a .cryproject (Climb 1 has no libCrySystem.so, GitHub #238) (2026-10)
 # 13: validate monolithic CryEngine projects/config, OBB filename formats and foveation cvar (The Climb, GitHub #238)
-ANALYSIS_VERSION = 13
+# 14: meta_depth_occlusion (Meta Depth API hard/soft occlusion keywords: frame.meta_depth_occlusion) (2026-10)
+ANALYSIS_VERSION = 14
 
 
 # Android versions by API level (for messages); the Frame's Lepton container runs Android 11 (API 30)
